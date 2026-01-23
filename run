@@ -1,5 +1,18 @@
 #!/bin/bash
 
+migrations() {
+    poetry run python -m de.manage makemigrations $@
+}
+
+migrate() {
+    poetry run python -m de.manage migrate
+}
+
+
+
+shell() {
+    poetry run python -m de.manage shell
+}
 
 lint() {
     git add .; poetry run pre-commit run --all-files 
