@@ -1,0 +1,35 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Ruff version.
+    rev: v0.6.4
+    hooks:
+      # Run the linter.
+      - id: ruff
+        args: [--fix]
+      # Run the formatter.
+      - id: ruff-format
+      
+  - repo: https://github.com/jsh9/pydoclint
+    rev: "0.5.8"
+    hooks:
+    - id: pydoclint
+      args: [--style=google, --check-return-types=False]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: end-of-file-fixer
+        exclude: ^terraform/
+      - id: check-yaml # Validate YAML files
+      - id: check-added-large-files # Check for giant files
+      - id: check-toml
+      - id: no-commit-to-branch
+        args: ["--branch=main"]
+      - id: detect-private-key
+
+  - repo: https://github.com/commitizen-tools/commitizen
+    rev: v3.29.0
+    hooks:
+      - id: commitizen
+      - id: commitizen-branch
+        stages: [pre-push]

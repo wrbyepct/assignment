@@ -1,0 +1,16 @@
+#!/bin/bash
+
+
+lint() {
+    git add .; poetry run pre-commit run --all-files 
+}
+
+
+help() {
+    echo "${1} <task> <arg>s"
+    echo "Tasks:"
+    compgen -A function | cat -n 
+}
+
+TIMEFORMAT="Task completed in %3lR"
+time ${@:-help}

@@ -1,0 +1,31 @@
+# Python
+__pycache__
+*.py[co]
+.Python
+env
+venv
+bin/
+include/
+lib/
+develop-eggs/
+dist/
+build/
+*.egg-info/
+.installed.cfg
+var/
+pip-selfcheck.json
+.cache
+.pytest_cache
+
+# Django
+*.log
+local_settings.py
+db.sqlite3
+/media
+/static
+
+# IDEs and other
+.vscode
+.idea
+.env
+.venv
