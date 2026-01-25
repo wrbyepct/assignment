@@ -36,6 +36,8 @@ services:
     volumes:
       - ./core:/app/core:ro # container 只能讀，不能修改本地檔案
       - ./run:/app/run:ro
+      - ./logs:/app/logs        # ← 新增這行
+
     ports:
       - "8000:8000"
 
@@ -46,7 +48,7 @@ services:
   etl-runner:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: docker/Dockerfile
     container_name: etl-runner
     depends_on:
       postgres:

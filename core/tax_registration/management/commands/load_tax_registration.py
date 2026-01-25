@@ -23,7 +23,7 @@ from core.tax_registration.models import (
     ImportProgress,
 )
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("tax_registration.etl")
 
 
 class Command(BaseCommand):
@@ -98,36 +98,62 @@ class Command(BaseCommand):
             self._truncate_tables()
 
         # 建立執行紀錄
+        self.create_etl_job()
+
+        try:
+            self.handle_successful_etl_job()
+        except Exception as e:
+            self.handle_failed_etl_job(e)
+        finally:
+            self.job_run.completed_at = timezone.now()
+            self.job_run.save()
+            self._print_summary()
+
+    def create_etl_job(self):
+        """創建 ETL Job 並 log"""
         self.job_run = ETLJobRun.objects.create(
             status="running",
             batch_size=self.batch_size,
             chunk_size=self.chunk_size,
             data_source_url=self.CSV_URL,
         )
-        try:
-            with self.track_progress():
-                self._run_etl()
+        logger.info(
+            "ETL 任務開始",
+            extra={
+                "event": "etl_started",
+                "job_run_id": self.job_run.id,
+                "batch_size": self.batch_size,
+                "chunk_size": self.chunk_size,
+                "dry_run": self.dry_run,
+            },
+        )
 
-            # 更新執行結果
-            self.job_run.status = "success"
-            self.job_run.records_total = self.stats["total"]
-            self.job_run.records_processed = self.stats["success"]
-            self.job_run.records_failed = self.stats["failed"]
-            self.job_run.records_duplicated = self.stats["duplicates"]
+    def handle_successful_etl_job(self):
+        """執行 ETL Job, 更新成功結果, log 成功訊息"""
+        with self._track_progress():
+            self._run_etl()
 
-        except Exception as e:
-            self.job_run.status = "failed"
-            self.job_run.error_message = str(e)
-            logger.exception("ETL 執行失敗")
-            raise CommandError(f"執行失敗: {e}")
+        # 更新執行結果
+        self.job_run.status = "success"
+        self.job_run.records_total = self.stats["total"]
+        self.job_run.records_processed = self.stats["success"]
+        self.job_run.records_failed = self.stats["failed"]
+        self.job_run.records_duplicated = self.stats["duplicates"]
 
-        finally:
-            self.job_run.completed_at = timezone.now()
-            self.job_run.save()
-            self._print_summary()
+        logger.info(
+            "ETL 任務完成",
+            extra={
+                "event": "etl_completed",
+                "job_run_id": self.job_run.id,
+                "status": "success",
+                "records_total": self.stats["total"],
+                "records_processed": self.stats["success"],
+                "records_failed": self.stats["failed"],
+            },
+        )
 
     @contextmanager
-    def track_progress(self):
+    def _track_progress(self):
         """追蹤執行進度"""
         self.start_time = timezone.now()
         self.stdout.write(
@@ -138,6 +164,21 @@ class Command(BaseCommand):
         yield  # _run_etl runs here
         duration = (timezone.now() - self.start_time).total_seconds()
         self.stdout.write(self.style.SUCCESS(f"\n執行時間: {duration:.2f} 秒"))
+
+    def handle_failed_etl_job(self, error):
+        """執行 ETL Job, 更新失敗結果, log 失敗訊息"""
+
+        self.job_run.status = "failed"
+        self.job_run.error_message = str(error)
+        logger.exception(
+            "ETL 任務失敗",
+            extra={
+                "event": "etl_failed",
+                "job_run_id": self.job_run.id,
+                "error": str(error),
+            },
+        )
+        raise CommandError(f"執行失敗: {error}")
 
     def _run_etl(self):
         """ETL 主流程"""
@@ -209,6 +250,15 @@ class Command(BaseCommand):
         self.stdout.write(f"\n📦 批次 {chunk_num}")
         self.stdout.write(f"  原始筆數: {len(df_chunk):,}")
 
+        logger.info(
+            "開始處理批次",
+            extra={
+                "event": "batch_started",
+                "job_run_id": self.job_run.id,
+                "batch_num": chunk_num,
+                "raw_count": len(df_chunk),
+            },
+        )
         # Transform: 清理資料
         df_clean, errors = self._transform_data(df_chunk, chunk_num)
         self.stats["failed"] += len(errors)
@@ -216,9 +266,19 @@ class Command(BaseCommand):
 
         # 記錄錯誤
         if errors:
+            # If any row has error, record which batch it is in has error
             self._log_errors(errors, chunk_num)
             self.stdout.write(self.style.WARNING(f"  ⚠️  驗證失敗: {len(errors)} 筆"))
 
+            logger.warning(
+                "批次驗證有錯誤",
+                extra={
+                    "event": "batch_validation_errors",
+                    "job_run_id": self.job_run.id,
+                    "batch_num": chunk_num,
+                    "error_count": len(errors),
+                },
+            )
         # Load: 載入資料庫
         if not df_clean.empty and not self.dry_run:
             success_count = self._load_data(df_clean, chunk_num)
@@ -226,12 +286,29 @@ class Command(BaseCommand):
             self.stdout.write(
                 self.style.SUCCESS(f"  ✅ 成功匯入: {success_count:,} 筆")
             )
-
+            logger.info(
+                "批次處理完成",
+                extra={
+                    "event": "batch_completed",
+                    "job_run_id": self.job_run.id,
+                    "batch_num": chunk_num,
+                    "records_processed": success_count,
+                },
+            )
             # 更新進度
             self._update_progress(chunk_num)
         elif self.dry_run:
             self.stdout.write(
                 self.style.NOTICE(f"  🔍 DRY RUN: 將匯入 {len(df_clean):,} 筆")
+            )
+            logger.info(
+                "Dry run 批次預覽",
+                extra={
+                    "event": "batch_dry_run",
+                    "job_run_id": self.job_run.id,
+                    "batch_num": chunk_num,
+                    "would_process": len(df_clean),
+                },
             )
 
     """
@@ -568,6 +645,21 @@ class Command(BaseCommand):
                     f"   >>> DataImportError.objects.filter(job_run_id={self.job_run.id})\n"
                 )
             )
+        # === 結構化 log 給 CloudWatch ===
+        logger.info(
+            "ETL 執行摘要",
+            extra={
+                "event": "etl_summary",
+                "job_run_id": self.job_run.id,
+                "status": self.job_run.status,
+                "duration_seconds": round(duration, 2),
+                "success_rate": round(success_rate, 2),
+                "records_total": self.stats["total"],
+                "records_success": self.stats["success"],
+                "records_failed": self.stats["failed"],
+                "records_duplicates": self.stats["duplicates"],
+            },
+        )
 
     def _create_session_with_retry(self) -> requests.Session:
         """建立帶重試機制的 Session"""

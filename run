@@ -5,11 +5,12 @@
 
 # ========== ETL commands ===========
 dry-run() {
-    python -m core.manage load_tax_registration --limit 100000 --dry-run   
+    docker compose exec django python -m core.manage load_tax_registration --limit 10000 --dry-run
+
 }
 
 update-import() {
-    python -m core.manage load_tax_registration --truncate
+    docker compose exec django python -m core.manage load_tax_registration --truncate
 
 }
 

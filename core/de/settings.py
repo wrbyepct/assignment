@@ -101,3 +101,54 @@ CHUNK_SIZE = env.int("CHUNK_SIZE", default=50000)
 
 # ==================== Logging ====================
 LOG_LEVEL = env("LOG_LEVEL", default="INFO")
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    # ===== Formatters =====
+    "formatters": {
+        "json": {
+            "()": "pythonjsonlogger.jsonlogger.JsonFormatter",
+            "format": "%(asctime)s %(levelname)s %(name)s %(message)s",
+            "rename_fields": {
+                "levelname": "level",
+                "asctime": "timestamp",
+            },
+            "datefmt": "%Y-%m-%dT%H:%M:%S%z",
+            "json_indent": 2 if DEBUG else None,
+            "json_ensure_ascii": False,  # Ensure chinese characters display
+        },
+    },
+    # ===== Handlers =====
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "json",
+            "stream": "ext://sys.stdout",
+        },
+        "file": {
+            "class": "logging.handlers.RotatingFileHandler",
+            "formatter": "json",
+            "filename": "/var/log/django/etl.log",
+            # 輪替門檻：當檔案達到 10MB (10 * 1024 * 1024 bytes) 時，就切換新檔
+            "maxBytes": 10 * 1024 * 1024,  # 10 MB
+            # 備份數量：最多保留 5 個舊檔（etl.log.1, etl.log.2...）
+            #  當產生第 6 個時，最舊的會被刪除。這叫「循環覆蓋」。
+            "backupCount": 5,
+            "encoding": "utf-8",
+        },
+    },
+    # ===== Loggers =====
+    "loggers": {
+        "tax_registration": {
+            "handlers": ["console", "file"],
+            "level": LOG_LEVEL,
+            "propagate": False,  # Don't send to root to duplicate logs
+        },
+    },
+    # ===== Root Logger =====
+    "root": {
+        "handlers": ["console"],
+        "level": "WARNING",  # Handle only third party WARNING log
+    },
+}
