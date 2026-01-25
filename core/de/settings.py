@@ -33,9 +33,13 @@ BASE_APPS = [
     "django.contrib.staticfiles",
 ]
 
+THIRD_PARTY_APPS = [
+    "django_q",
+]
+
 PROJECT_APPS = ["core.tax_registration"]
 
-INSTALLED_APPS = BASE_APPS + PROJECT_APPS
+INSTALLED_APPS = BASE_APPS + THIRD_PARTY_APPS + PROJECT_APPS
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
@@ -98,6 +102,20 @@ STATIC_URL = "static/"
 CSV_URL = env("CSV_URL", default="https://eip.fia.gov.tw/data/BGMOPEN1.csv")
 BATCH_SIZE = env.int("BATCH_SIZE", default=10000)
 CHUNK_SIZE = env.int("CHUNK_SIZE", default=50000)
+
+
+# 2. 配置 Django-Q2
+Q_CLUSTER = {
+    "name": "ETL_Cluster",
+    "workers": 1,
+    "queue_limit": 50,
+    "recycle": 5,  # 執行 500 次任務後重啟 worker，防止記憶體洩漏
+    "timeout": 7200,  # 2 小時（ETL 可能跑很久）
+    "retry": 7300,  # 重試時間要略長於 timeout
+    "orm": "default",  # 【關鍵】直接使用你的 Postgres，不需 Redis
+    "compress": True,  # 壓縮儲存的任務內容
+    "cpu_affinity": 1,  # 最佳化 CPU 使用
+}
 
 # ==================== Logging ====================
 LOG_LEVEL = env("LOG_LEVEL", default="INFO")
