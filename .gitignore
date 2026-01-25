@@ -29,7 +29,7 @@ db.sqlite3
 .idea
 .env
 .venv
-
+.env.local
 
 errors/
 *.csv

@@ -1,0 +1,72 @@
+# ==================== Git 相關 ====================
+.git/
+.gitignore
+.gitattributes
+
+# ==================== Python 相關 ====================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# ==================== 虛擬環境 ====================
+venv/
+env/
+ENV/
+.venv/
+bin/
+include/
+lib/
+develop-eggs/
+pip-selfcheck.json
+
+# ==================== Django 相關 ====================
+*.log
+db.sqlite3
+db.sqlite3-journal
+/media
+/static
+local_settings.py
+
+# ==================== 測試 & 開發工具 ====================
+.pytest_cache/
+.cache/
+.tox/
+.coverage
+htmlcov/
+*.cover
+
+# ==================== IDE 設定檔 ====================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ==================== 環境變數 ====================
+.env
+.env.*
+!.env.example  
+
+# ==================== 專案特定檔案 ====================
+errors/         
+*.csv         
+*.xlsx
+*.xls
+
+# ==================== Docker 相關 ====================
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# ==================== 文檔 ====================
+README.md
+面試題目詳細規劃
+*.pdf
+
+# ==================== Terraform & IaC ====================
+terraform/
+*.tfstate
+*.tfstate.backup
+.terraform/

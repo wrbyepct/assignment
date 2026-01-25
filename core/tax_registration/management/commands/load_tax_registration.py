@@ -15,7 +15,7 @@ from django.utils import timezone
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
 
-from de.tax_registration.models import (
+from core.tax_registration.models import (
     TaxRegistration,
     BusinessIndustry,
     ETLJobRun,
@@ -269,7 +269,7 @@ class Command(BaseCommand):
         for _, row in df[invalid_mask].iterrows():
             errors.append(
                 {
-                    "type": "INVALID_FORMAT",
+                    "type": "INVALID_BAN",
                     "batch": chunk_num,
                     "ban": row["統一編號"],  # ✅ 更簡潔
                     "message": f"統一編號格式錯誤: {row['統一編號']}",
