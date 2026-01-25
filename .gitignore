@@ -33,3 +33,5 @@ db.sqlite3
 
 errors/
 *.csv
+
+logs/

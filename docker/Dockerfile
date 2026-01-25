@@ -47,13 +47,18 @@ COPY docker/start /app/start
 # 確保 run 腳本可執行
 RUN chmod +x /app/run /app/start
 
-RUN chown -R django:django /app
+# 建立 log 並設定權限
+RUN mkdir -p /var/log/django && \
+    chown -R django:django /app /var/log/django
+
 USER django
 
 # 設定 PATH（讓虛擬環境的 python 可用）
 ENV PATH="/app/.venv/bin:$PATH"
+# Instant logging in container, no buffer
 ENV PYTHONUNBUFFERED=1
-ENV PYTHONDONTWRITEBYTECODE=1
+# No .pyc files for smaller image
+ENV PYTHONDONTWRITEBYTECODE=1 
 
 # Healthcheck（確認 Django 可以啟動）
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
