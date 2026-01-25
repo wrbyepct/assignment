@@ -63,6 +63,3 @@ ENV PYTHONDONTWRITEBYTECODE=1
 # Healthcheck（確認 Django 可以啟動）
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD python -c "import django; django.setup()" || exit 1
-
-# 預設執行指令（可被 docker-compose 或 ECS 覆寫）
-ENTRYPOINT ["/app/start"]

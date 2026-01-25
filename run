@@ -10,7 +10,7 @@ dry-run() {
 }
 
 update-import() {
-    docker compose exec django python -m core.manage load_tax_registration --truncate
+    python -m core.manage load_tax_registration --truncate
 
 }
 

@@ -30,19 +30,46 @@ services:
     env_file:
       - .env.local
     environment:
-      DATABASE_URL: postgres://my_db_user:my_password@postgres:5432/my_project_db
       COLLECT_STATIC: "false"  # 開發時不需要
 
     volumes:
       - ./core:/app/core:ro # container 只能讀，不能修改本地檔案
       - ./run:/app/run:ro
-      - ./logs:/app/logs        # ← 新增這行
+      - django_logs:/var/log/django
 
     ports:
       - "8000:8000"
 
+    entrypoint:
+      - "/app/start"
+
+    healthcheck:
+      test: ["CMD", "python", "-m", "core.manage", "shell", "-c", "import sys; exit(0)"]
+      interval: 10s      
+      timeout: 5s       
+      retries: 5        
+      start_period: 10s # 啟動初期寬限期  
     restart: unless-stopped
 
+  # ==================== Django-Q2 Worker (後台排程器) ====================
+  q-worker:
+    build:
+      context: .
+      dockerfile: ./docker/Dockerfile
+    container_name: q-worker
+    depends_on:
+      django:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env.local
+    volumes:
+      - ./core:/app/core:ro
+      - ./errors:/app/errors
+      - django_logs:/var/log/django
+    command: python -m core.manage qcluster
+    restart: unless-stopped
 
   # ==================== ETL 執行器（一次性任務）====================
   etl-runner:
@@ -55,11 +82,11 @@ services:
         condition: service_healthy
     env_file:
       - .env.local
-    environment:
-      DATABASE_URL: postgres://my_db_user:my_password@postgres:5432/my_project_db
     volumes:
       - ./core:/app/core:ro
       - ./errors:/app/errors  # 錯誤檔案輸出
+      - django_logs:/var/log/django
+
     # 覆寫 CMD 執行 ETL
     command: python -m core.manage load_tax_registration --truncate
     profiles:
@@ -67,3 +94,4 @@ services:
 
 volumes:
   postgres_data:
+  django_logs:
