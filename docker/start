@@ -1,0 +1,95 @@
+#!/bin/bash
+set -e  # 任何指令失敗就停止
+
+# ==================== 顏色輸出 ====================
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+log_info() {
+    echo -e "${GREEN}[INFO]${NC} $1"
+}
+
+log_warn() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
+}
+
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+# ==================== 等待資料庫就緒 ====================
+wait_for_db() {
+    log_info "等待資料庫連線..."
+    
+    local max_attempts=30
+    local attempt=1
+    
+    while [ $attempt -le $max_attempts ]; do
+        if python -m core.manage check --database default > /dev/null 2>&1; then
+            log_info "資料庫連線成功！"
+            return 0
+        fi
+        
+        log_warn "資料庫尚未就緒，等待中... ($attempt/$max_attempts)"
+        sleep 2
+        attempt=$((attempt + 1))
+    done
+    
+    log_error "無法連線到資料庫，已超過最大嘗試次數"
+    exit 1
+}
+
+# ==================== 執行資料庫遷移 ====================
+run_migrations() {
+    log_info "執行資料庫遷移..."
+    python -m core.manage migrate --noinput
+    log_info "資料庫遷移完成！"
+}
+
+# ==================== 建立超級管理員 ====================
+create-admin() {
+    log_info "檢查並建立超級管理員..."
+
+    python -m core.manage createsuperuser --noinput || log_warn "超級管理員可能已存在，跳過建立。"
+}
+
+
+# ==================== 收集靜態檔案（Production 用）====================
+collect_static() {
+    if [ "$COLLECT_STATIC" = "true" ]; then
+        log_info "收集靜態檔案..."
+        python -m core.manage collectstatic --noinput
+        log_info "靜態檔案收集完成！"
+    fi
+}
+
+# ==================== 主流程 ====================
+main() {
+    log_info "=========================================="
+    log_info "Django ETL Container 啟動中..."
+    log_info "=========================================="
+    
+    # 1. 等待資料庫
+    wait_for_db
+    
+    # 2. 執行遷移
+    run_migrations
+    
+    # 3. Create superuser
+    create-admin
+
+    # 4. (optional)
+    collect_static
+    
+    log_info "=========================================="
+    log_info "初始化完成，執行主指令..."
+    log_info "=========================================="
+    
+    # 5. Run server
+    python -m core.manage runserver 0.0.0.0:8000
+}
+
+# 執行主流程
+main

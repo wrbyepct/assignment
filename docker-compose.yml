@@ -1,17 +1,67 @@
 services:
-    postgres:
-      image: postgres:15-bullseye
-      ports:
-        - "5432:5432"
-      volumes:
-        - local_postgres_db:/var/lib/postgresql/data
-      environment:
-      # Required for initial DB creation
-      - POSTGRES_DB=my_project_db
-      - POSTGRES_USER=my_db_user
-      - POSTGRES_PASSWORD=my_password
-      restart: always
- 
+  # ==================== PostgreSQL 資料庫 ====================
+  postgres:
+    image: postgres:15-bullseye
+    container_name: etl-postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: my_project_db
+      POSTGRES_USER: my_db_user
+      POSTGRES_PASSWORD: my_password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U my_db_user -d my_project_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ==================== Django ETL 應用 ====================
+  django:
+    build:
+      context: .
+      dockerfile: ./docker/Dockerfile
+    container_name: etl-django
+    depends_on:
+      postgres:
+        condition: service_healthy  
+    env_file:
+      - .env.local
+    environment:
+      DATABASE_URL: postgres://my_db_user:my_password@postgres:5432/my_project_db
+      COLLECT_STATIC: "false"  # 開發時不需要
+
+    volumes:
+      - ./core:/app/core:ro # container 只能讀，不能修改本地檔案
+      - ./run:/app/run:ro
+    ports:
+      - "8000:8000"
+
+    restart: unless-stopped
+
+
+  # ==================== ETL 執行器（一次性任務）====================
+  etl-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: etl-runner
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env.local
+    environment:
+      DATABASE_URL: postgres://my_db_user:my_password@postgres:5432/my_project_db
+    volumes:
+      - ./core:/app/core:ro
+      - ./errors:/app/errors  # 錯誤檔案輸出
+    # 覆寫 CMD 執行 ETL
+    command: python -m core.manage load_tax_registration --truncate
+    profiles:
+      - etl  # 只有指定 profile 才會啟動
 
 volumes:
-  local_postgres_db:
+  postgres_data:

@@ -1,7 +1,7 @@
 """Function to bulk copy to db"""
 
 import csv
-from de.utils.csv_downloader import download_csv
+from core.utils.csv_downloader import download_csv
 
 
 def print_first_few_lines(first=None):
