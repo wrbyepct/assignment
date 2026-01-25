@@ -9,6 +9,32 @@ migrate() {
 }
 
 
+# Django commands 
+load-csv-to-db() {
+    poetry run python -m de.manage load_tax_registration
+}
+
+
+# dry run
+dry-run() {
+    poetry run python -m de.manage load_tax_registration --limit 100000 --dry-run   
+}
+
+server() {
+    poetry run python -m de.manage runserver
+}
+
+superuser() {
+    poetry run python -m de.manage createsuperuser
+}
+
+
+# contrainer
+up() {
+    docker-compose -f docker-compose.yml up $@ --build -d 
+}
+
+
 
 shell() {
     poetry run python -m de.manage shell
