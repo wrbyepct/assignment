@@ -1,0 +1,17 @@
+services:
+    postgres:
+      image: postgres:15-bullseye
+      ports:
+        - "5432:5432"
+      volumes:
+        - local_postgres_db:/var/lib/postgresql/data
+      environment:
+      # Required for initial DB creation
+      - POSTGRES_DB=my_project_db
+      - POSTGRES_USER=my_db_user
+      - POSTGRES_PASSWORD=my_password
+      restart: always
+ 
+
+volumes:
+  local_postgres_db:
