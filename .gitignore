@@ -35,3 +35,11 @@ errors/
 *.csv
 
 logs/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfstate.*
+*.tfvars
+*.tfvars.json

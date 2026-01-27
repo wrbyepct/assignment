@@ -37,6 +37,15 @@ services:
       - ./run:/app/run:ro
       - django_logs:/var/log/django
 
+    # ===== awslogs driver：收集 stdout/stderr =====
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ${AWS_REGION:-ap-northeast-1}
+        awslogs-group: ${CLOUDWATCH_LOG_GROUP:-/docker/etl}
+        awslogs-stream: ${CLOUDWATCH_LOG_STREAM_CONSOLE:-console}
+        awslogs-create-group: "true"  # 若 Log Group 不存在則自動建立
+
     ports:
       - "8000:8000"
 
@@ -68,7 +77,33 @@ services:
       - ./core:/app/core:ro
       - ./errors:/app/errors
       - django_logs:/var/log/django
+
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ${AWS_REGION:-ap-northeast-1}
+        awslogs-group: ${CLOUDWATCH_LOG_GROUP:-/docker/etl}
+        awslogs-stream: q-worker
+        awslogs-create-group: "true"
+
     command: python -m core.manage qcluster
+    restart: unless-stopped
+
+# ==================== CloudWatch Agent（收集實體檔案）====================
+  cloudwatch-agent:
+    image: amazon/cloudwatch-agent:latest
+    container_name: cloudwatch-agent
+    depends_on:
+      - django
+    volumes:
+      # 掛載 Agent 設定檔
+      - ./docker/cloudwatch-agent/config.json:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json:ro
+      # 掛載 Django log 目錄（唯讀）
+      - django_logs:/var/log/django:ro
+    environment:
+      - AWS_REGION=${AWS_REGION:-ap-northeast-1}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
     restart: unless-stopped
 
   # ==================== ETL 執行器（一次性任務）====================
@@ -86,6 +121,14 @@ services:
       - ./core:/app/core:ro
       - ./errors:/app/errors  # 錯誤檔案輸出
       - django_logs:/var/log/django
+
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ${AWS_REGION:-ap-northeast-1}
+        awslogs-group: ${CLOUDWATCH_LOG_GROUP:-/docker/etl}
+        awslogs-stream: etl-runner
+        awslogs-create-group: "true"
 
     # 覆寫 CMD 執行 ETL
     command: python -m core.manage load_tax_registration --truncate
