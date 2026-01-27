@@ -6,7 +6,7 @@ import pandas as pd
 import requests
 from io import StringIO
 from contextlib import contextmanager
-from typing import Tuple, List
+from typing import List
 from datetime import datetime
 
 from django.core.management.base import BaseCommand, CommandError
@@ -22,6 +22,7 @@ from core.tax_registration.models import (
 )
 
 from core.tax_registration.etl.extractor import CSVExtractor
+from core.tax_registration.etl.transformer import TaxDataTransformer
 
 
 logger = logging.getLogger("tax_registration.etl")
@@ -196,6 +197,8 @@ class Command(BaseCommand):
             raise CommandError(f"資料下載失敗: {e}")
 
         # 2. Transform & Load: 清理並載入
+        self.transformer = TaxDataTransformer()
+
         self.stdout.write("🔄 階段 2: 轉換並載入資料...")
 
         # 取得起始批次(斷點續傳)
@@ -235,8 +238,10 @@ class Command(BaseCommand):
 
     def _process_chunk(self, df_chunk: pd.DataFrame, chunk_num: int):
         """處理單一 chunk"""
+        original_count = len(df_chunk)
+
         self.stdout.write(f"\n📦 批次 {chunk_num}")
-        self.stdout.write(f"  原始筆數: {len(df_chunk):,}")
+        self.stdout.write(f"  原始筆數: {original_count:,}")
 
         logger.info(
             "開始處理批次",
@@ -244,13 +249,19 @@ class Command(BaseCommand):
                 "event": "batch_started",
                 "job_run_id": self.job_run.id,
                 "batch_num": chunk_num,
-                "raw_count": len(df_chunk),
+                "raw_count": original_count,
             },
         )
         # Transform: 清理資料
-        df_clean, errors = self._transform_data(df_chunk, chunk_num)
+        df_clean, errors = self.transformer.process(df_chunk, chunk_num)
+        self.stdout.write(f"  清理: {original_count:,} → {len(df_clean):,} 筆")
+
         self.stats["failed"] += len(errors)
-        self.stats["total"] += len(df_chunk)
+        self.stats["total"] += original_count
+
+        # 統計重複筆數
+        duplicates_count = sum(1 for e in errors if e["type"] == "DUPLICATE")
+        self.stats["duplicates"] += duplicates_count
 
         # 記錄錯誤
         if errors:
@@ -298,124 +309,6 @@ class Command(BaseCommand):
                     "would_process": len(df_clean),
                 },
             )
-
-    """
-    ===== Transform ====
-    """
-
-    def _transform_data(
-        self, df: pd.DataFrame, chunk_num: int
-    ) -> Tuple[pd.DataFrame, List[dict]]:
-        """清理並驗證資料"""
-        errors = []
-        original_count = len(df)
-
-        # 1. 移除完全空白的行
-        df = df.dropna(how="all")
-
-        # 2. 驗證必填欄位
-        required_cols = ["統一編號", "營業人名稱"]
-        missing_cols = [col for col in required_cols if col not in df.columns]
-        if missing_cols:
-            logger.error(f"批次 {chunk_num} 缺少欄位: {missing_cols}")
-            logger.error(f"實際欄位: {list(df.columns)}")
-            logger.error(f"前 3 行資料:\n{df.head(3)}")
-            raise ValueError(f"缺少必要欄位: {missing_cols}")
-
-        # 3. 清理統一編號
-        df["統一編號"] = df["統一編號"].fillna("").str.strip()
-
-        # 4. 驗證統一編號格式
-        # Filter out the rows that is not digit and not 8 digits
-        invalid_mask = (df["統一編號"].str.len() != 8) | (~df["統一編號"].str.isdigit())
-
-        # 記錄格式錯誤
-        # Loop for in invalid rows, df[invalid_mask] get us the entire invalid rows
-        for _, row in df[invalid_mask].iterrows():
-            errors.append(
-                {
-                    "type": "INVALID_BAN",
-                    "batch": chunk_num,
-                    "ban": row["統一編號"],  # ✅ 更簡潔
-                    "message": f"統一編號格式錯誤: {row['統一編號']}",
-                }
-            )
-
-        df = df[~invalid_mask].copy()  # Filter out the actual valid rows
-
-        # 5. 處理重複資料
-        duplicates_mask = df.duplicated(subset=["統一編號"], keep="first")
-        duplicates_count = duplicates_mask.sum()
-
-        if duplicates_count > 0:
-            self.stats["duplicates"] += duplicates_count
-            for idx in df[duplicates_mask].index:
-                errors.append(
-                    {
-                        "type": "DUPLICATE",
-                        "batch": chunk_num,
-                        "ban": df.loc[idx, "統一編號"],
-                        "message": f"重複的統一編號: {df.loc[idx, '統一編號']}",
-                    }
-                )
-
-        df = df[~duplicates_mask].copy()
-
-        # 6. 清理其他欄位
-        df = self._clean_fields(df)
-
-        # Print out before and after rows
-        cleaned_count = len(df)
-        self.stdout.write(f"  清理: {original_count:,} → {cleaned_count:,} 筆")
-
-        return df, errors
-
-    def _clean_fields(self, df: pd.DataFrame) -> pd.DataFrame:
-        """清理各欄位"""
-        # 總機構統一編號
-        df["總機構統一編號"] = df["總機構統一編號"].fillna("").str.strip()
-        df.loc[df["總機構統一編號"] == "", "總機構統一編號"] = None
-
-        # 公司名稱
-        df["營業人名稱"] = df["營業人名稱"].fillna("").str.strip()
-
-        # 地址
-        df["營業地址"] = df["營業地址"].fillna("").str.strip()
-
-        # 設立日期
-        df["設立日期"] = df["設立日期"].fillna("").str.strip()
-
-        # 組織別
-        df["組織別名稱"] = df["組織別名稱"].fillna("").str.strip()
-
-        # 資本額
-        df["資本額"] = (
-            pd.to_numeric(
-                df["資本額"].fillna("0").str.replace(",", ""),
-                errors="coerce",  # if cannot convert turn it to NaN
-            )
-            .fillna(0)  # Turn NaN back to 0
-            .astype("int64")
-        )
-
-        # 使用統一發票
-        df["使用統一發票"] = (
-            df["使用統一發票"]
-            .map({"Y": True, "y": True, "N": False, "n": False})
-            .fillna(False)
-        )
-
-        # 行業代號與名稱
-        for i in ["", "1", "2", "3"]:
-            code_col = f"行業代號{i}" if i else "行業代號"
-            name_col = f"名稱{i}" if i else "名稱"
-
-            if code_col in df.columns:
-                df[code_col] = df[code_col].fillna("").str.strip()
-            if name_col in df.columns:
-                df[name_col] = df[name_col].fillna("").str.strip()
-
-        return df
 
     """
     ===== Load ====
