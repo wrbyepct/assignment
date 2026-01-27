@@ -56,6 +56,109 @@ shell() {
     poetry run python -m core.manage shell
 }
 
+# ==================== Terraform 指令 ====================
+tf-init() {
+    echo "[STEP] 初始化 Terraform..."
+    docker compose -f terraform/tf.yml run --rm terraform init
+}
+
+tf-validate() {
+    docker compose -f terraform/tf.yml run --rm terraform validate
+
+}
+
+tf-format() {
+    docker compose -f terraform/tf.yml run --rm terraform fmt 
+
+}
+
+tf-plan() {
+    echo "[STEP] 執行 Terraform plan..."
+    docker compose -f terraform/tf.yml run --rm terraform plan
+}
+
+tf-apply() {
+    echo "[STEP] 執行 Terraform apply..."
+    docker compose run -f terraform/tf.yml --rm terraform apply -auto-approve
+
+}
+
+tf-destroy() {
+    echo "[WARN] 即將銷毀所有 AWS 資源！"
+    read -p "確定要繼續嗎？(yes/no): " confirm
+    if [ "$confirm" = "yes" ]; then
+        cd terraform && terraform destroy -auto-approve
+    else
+        echo "[INFO] 操作已取消"
+    fi
+}
+
+# ==================== CloudWatch 驗證指令 ====================
+# 為什麼需要：讓審閱人員可以快速確認 log 有送到 CloudWatch
+verify-logs() {
+    echo "[STEP] 驗證 CloudWatch Logs..."
+    
+    # 載入環境變數
+    source .env.local 2>/dev/null
+    
+    LOG_GROUP="${CLOUDWATCH_LOG_GROUP:-/docker/etl}"
+    
+    # 列出最近的 log 事件
+    aws logs filter-log-events \
+        --log-group-name "$LOG_GROUP" \
+        --limit 10 \
+        --region "$AWS_REGION"
+}
+
+# ==================== One click AWS credentials setup  ====================
+setup() {
+    echo "=========================================="
+    echo "🚀 開始一鍵設定..."
+    echo "=========================================="
+    
+    # 檢查 .env.local 是否存在
+    if [ ! -f ".env.local" ]; then
+        echo "[ERROR] .env.local 不存在！"
+        echo "請先執行: cp .env.example .env.local"
+        echo "然後填入你的 AWS credentials" # Log writer IAM user
+        exit 1
+    fi
+    
+    # 載入環境變數
+    source .env.local
+    
+    # 檢查 AWS credentials 是否已填入
+    if [ "$AWS_ACCESS_KEY_ID" = "your-access-key-id" ]; then
+        echo "[ERROR] 請先在 .env.local 填入真實的 AWS credentials！"
+        exit 1
+    fi
+    
+    echo ""
+    echo "[Step 1/4] 初始化 Terraform..."
+    tf-init
+    
+    echo ""
+    echo "[Step 2/4] 建立 AWS 資源..."
+    tf-apply
+    
+    echo ""
+    echo "[Step 3/4] 啟動 Docker 容器..."
+    up
+    
+    echo ""
+    echo "[Step 4/4] 等待服務就緒..."
+    sleep 10
+    
+    echo ""
+    echo "=========================================="
+    echo "✅ 設定完成！"
+    echo "=========================================="
+    echo ""
+    echo "後續指令："
+    echo "  ./run dry-run       # 測試 ETL"
+    echo "  ./run verify-logs   # 確認 CloudWatch 收到 log"
+}
+
 
 # ========== QA cocmmands ===========
 lint() {

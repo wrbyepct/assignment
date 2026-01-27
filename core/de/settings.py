@@ -109,12 +109,13 @@ Q_CLUSTER = {
     "name": "ETL_Cluster",
     "workers": 1,
     "queue_limit": 50,
-    "recycle": 5,  # 執行 500 次任務後重啟 worker，防止記憶體洩漏
+    "recycle": 5,  # 執行 5 次任務後重啟 worker，防止記憶體洩漏
     "timeout": 7200,  # 2 小時（ETL 可能跑很久）
     "retry": 7300,  # 重試時間要略長於 timeout
-    "orm": "default",  # 【關鍵】直接使用你的 Postgres，不需 Redis
-    "compress": True,  # 壓縮儲存的任務內容
+    "orm": "default",  # 直接使用 DB，不需 Redis
+    "compress": True,  # 任務資料壓縮後存，省 DB 空間
     "cpu_affinity": 1,  # 最佳化 CPU 使用
+    "catch_up": False,  # ETL 是 full refresh（truncate + 重新匯入），補跑沒意義，反而可能造成重複執行
 }
 
 # ==================== Logging ====================
