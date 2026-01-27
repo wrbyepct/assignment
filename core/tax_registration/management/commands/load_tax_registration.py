@@ -12,8 +12,6 @@ from datetime import datetime
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction, connection
 from django.utils import timezone
-from requests.adapters import HTTPAdapter
-from urllib3.util import Retry
 
 from core.tax_registration.models import (
     TaxRegistration,
@@ -22,6 +20,9 @@ from core.tax_registration.models import (
     DataImportError,
     ImportProgress,
 )
+
+from core.tax_registration.etl.extractor import CSVExtractor
+
 
 logger = logging.getLogger("tax_registration.etl")
 
@@ -64,6 +65,9 @@ class Command(BaseCommand):
         parser.add_argument(
             "--limit", type=int, default=None, help="限制處理筆數(測試用)"
         )
+        parser.add_argument(
+            "--auto", action="store_true", help="跳過確認提示（用於自動化排程）"
+        )
 
     def handle(self, *args, **options):
         """主要進入點"""
@@ -72,12 +76,12 @@ class Command(BaseCommand):
         self.dry_run = options["dry_run"]
         self.resume = options["resume"]
         self.limit = options["limit"]
+        self.auto = options["auto"]  # 存起來
 
-        # TODO check if this query is slow
-        # TODO Explore other more effcient solutions
         # 檢查是否有正在執行中的任務
-
-        ongoing_job = ETLJobRun.objects.filter(status="running").exists()
+        ongoing_job = ETLJobRun.objects.filter(
+            status="running"
+        ).exists()  # Already indexed, the query is fast
 
         if ongoing_job:
             self.stdout.write(self.style.ERROR("已有任務正在執行中，請稍後再試。"))
@@ -184,7 +188,12 @@ class Command(BaseCommand):
         """ETL 主流程"""
         # 1. Extract: 下載資料
         self.stdout.write("📥 階段 1: 擷取資料...")
-        data_chunks = self._extract_data()
+
+        try:
+            extractor = CSVExtractor(self.CSV_URL)
+            data_chunks = extractor.fetch_chunks(self.chunk_size)
+        except requests.RequestException as e:
+            raise CommandError(f"資料下載失敗: {e}")
 
         # 2. Transform & Load: 清理並載入
         self.stdout.write("🔄 階段 2: 轉換並載入資料...")
@@ -223,27 +232,6 @@ class Command(BaseCommand):
                 # 決定是否繼續
                 if not self._should_continue_on_error():
                     raise
-
-    def _extract_data(self):
-        """下載 CSV 資料"""
-        session = self._create_session_with_retry()
-
-        try:
-            response = session.get(self.CSV_URL, stream=True, timeout=60)
-            response.raise_for_status()
-
-            # 使用 Pandas 分批讀取
-            return pd.read_csv(
-                response.raw,
-                encoding="utf-8",
-                chunksize=self.chunk_size,
-                dtype=str,  # 全部先當字串
-                na_values=["", "NULL", "null", "NA", "N/A"],  # 這些值視為空值
-                keep_default_na=False,  # 不要用 pandas 預設的空值判斷, "NA" → NaN（但 "NA" 可能是公司名稱的一部分）
-            )  # 回傳 generator
-
-        except requests.RequestException as e:
-            raise CommandError(f"資料下載失敗: {e}")
 
     def _process_chunk(self, df_chunk: pd.DataFrame, chunk_num: int):
         """處理單一 chunk"""
@@ -661,26 +649,11 @@ class Command(BaseCommand):
             },
         )
 
-    def _create_session_with_retry(self) -> requests.Session:
-        """建立帶重試機制的 Session"""
-        # Create longer connection
-        session = requests.Session()
-
-        retry = Retry(
-            total=3,  # 最多重試 3 次
-            backoff_factor=1,  # 每次等待時間：1秒 → 2秒 → 4秒（指數遞增）
-            status_forcelist=[429, 500, 502, 503, 504],  # 遇到這些錯誤碼才重試
-            allowed_methods=["GET"],  # 只有 GET 請求才重試（不重試 POST/PUT）
-        )
-
-        adapter = HTTPAdapter(max_retries=retry)
-        session.mount("http://", adapter)
-        session.mount("https://", adapter)
-
-        return session
-
     def _confirm_truncate(self) -> bool:
         """確認清空資料"""
+        if self.auto:
+            return True  # 自動化模式直接通過
+
         count = TaxRegistration.objects.count()
         self.stdout.write(
             self.style.WARNING(f"\n⚠️  警告:即將刪除 {count:,} 筆營業登記資料!")
