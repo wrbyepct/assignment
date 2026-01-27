@@ -79,7 +79,7 @@ tf-plan() {
 
 tf-apply() {
     echo "[STEP] 執行 Terraform apply..."
-    docker compose run -f terraform/tf.yml --rm terraform apply -auto-approve
+    docker compose -f terraform/tf.yml run --rm terraform apply -auto-approve
 
 }
 
