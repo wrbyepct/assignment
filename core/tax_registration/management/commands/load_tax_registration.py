@@ -1,21 +1,18 @@
 # tax_registration/management/commands/import_business.py
 import logging
 from pathlib import Path
-import csv
 import pandas as pd
 import requests
-from io import StringIO
 from contextlib import contextmanager
 from typing import List
 from datetime import datetime
 
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction, connection
+from django.db import connection
 from django.utils import timezone
 
 from core.tax_registration.models import (
     TaxRegistration,
-    BusinessIndustry,
     ETLJobRun,
     DataImportError,
     ImportProgress,
@@ -23,6 +20,7 @@ from core.tax_registration.models import (
 
 from core.tax_registration.etl.extractor import CSVExtractor
 from core.tax_registration.etl.transformer import TaxDataTransformer
+from core.tax_registration.etl.loader import BulkLoader
 
 
 logger = logging.getLogger("tax_registration.etl")
@@ -198,6 +196,7 @@ class Command(BaseCommand):
 
         # 2. Transform & Load: 清理並載入
         self.transformer = TaxDataTransformer()
+        self.loader = BulkLoader(self.batch_size)
 
         self.stdout.write("🔄 階段 2: 轉換並載入資料...")
 
@@ -280,7 +279,7 @@ class Command(BaseCommand):
             )
         # Load: 載入資料庫
         if not df_clean.empty and not self.dry_run:
-            success_count = self._load_data(df_clean, chunk_num)
+            success_count = self.loader.insert(df_clean)
             self.stats["success"] += success_count
             self.stdout.write(
                 self.style.SUCCESS(f"  ✅ 成功匯入: {success_count:,} 筆")
@@ -313,122 +312,6 @@ class Command(BaseCommand):
     """
     ===== Load ====
     """
-
-    def _load_data(self, df: pd.DataFrame, batch_num: int) -> int:
-        """載入資料到資料庫"""
-        try:
-            with transaction.atomic():
-                # 準備 TaxRegistration 資料
-                tax_records = self._prepare_tax_records(df)
-
-                # 使用 PostgreSQL COPY 快速匯入
-                count = self._bulk_insert_copy(tax_records)
-
-                # 匯入行業資料
-                industry_records = self._prepare_industry_records(df)
-                if industry_records:
-                    self._bulk_insert_industries(industry_records)
-
-                return count
-
-        except Exception as e:
-            logger.error(f"批次 {batch_num} 載入失敗: {e}")
-            raise
-
-    def _prepare_tax_records(self, df: pd.DataFrame) -> pd.DataFrame:
-        """準備 TaxRegistration 記錄"""
-        return df[
-            [
-                "統一編號",
-                "總機構統一編號",
-                "營業人名稱",
-                "營業地址",
-                "資本額",
-                "設立日期",
-                "組織別名稱",
-                "使用統一發票",
-            ]
-        ].copy()  # Select only these columns as sheet
-
-    def _bulk_insert_copy(self, df: pd.DataFrame) -> int:
-        """使用 PostgreSQL COPY 批次匯入"""
-        # 轉換為 CSV StringIO
-        buffer = StringIO()
-
-        # 準備欄位順序
-        df_ordered = df.copy()
-
-        # 處理 NULL 值
-        df_ordered["總機構統一編號"] = df_ordered["總機構統一編號"].replace(
-            {None: "\\N", "": "\\N"}
-        )
-
-        # 寫入 CSV
-        df_ordered.to_csv(
-            buffer,
-            index=False,
-            header=False,
-            sep="\t",
-            na_rep="\\N",
-            quoting=csv.QUOTE_MINIMAL,  # ✅ 加入這個
-            escapechar="\\",  # ✅ 加入這個
-            doublequote=False,
-        )
-        buffer.seek(0)
-
-        # COPY 匯入
-        with connection.cursor() as cursor:
-            cursor.copy_from(
-                buffer,
-                "tax_registration",  # 表名
-                sep="\t",
-                null="\\N",
-                columns=(
-                    "ban",
-                    "headquarters_ban",
-                    "business_name",
-                    "business_address",
-                    "capital_amount",
-                    "business_setup_date",
-                    "business_type",
-                    "is_use_invoice",
-                ),
-            )
-
-        return len(df_ordered)
-
-    def _prepare_industry_records(self, df: pd.DataFrame) -> List[BusinessIndustry]:
-        """準備行業記錄 for bulk insert"""
-        records = []
-
-        for _, row in df.iterrows():
-            ban = row["統一編號"]
-
-            # 處理最多 4 組行業
-            for i, suffix in enumerate(["", "1", "2", "3"], 1):
-                code_col = f"行業代號{suffix}" if suffix else "行業代號"
-                name_col = f"名稱{suffix}" if suffix else "名稱"
-
-                if code_col in row and row[code_col]:
-                    records.append(
-                        BusinessIndustry(
-                            business_id=ban,
-                            industry_code=row[code_col],
-                            industry_name=row.get(name_col, ""),
-                            order=i,
-                        )
-                    )
-
-        return records
-
-    def _bulk_insert_industries(self, records: List[BusinessIndustry]):
-        """批次匯入行業資料"""
-        # 使用 bulk_create 搭配 ignore_conflicts
-        BusinessIndustry.objects.bulk_create(
-            records,
-            batch_size=5000,
-            ignore_conflicts=True,  # 忽略重複的行業代號
-        )
 
     def _log_errors(self, errors: List[dict], chunk_num: int):
         """記錄錯誤到資料庫"""
