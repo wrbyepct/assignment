@@ -66,7 +66,12 @@ class TaxRegistration(models.Model):
     )
 
     data_source_date = models.DateField(
-        "資料來源日期", null=True, blank=True, help_text="CSV 檔案的日期"
+        "資料來源日期",
+        null=True,
+        blank=True,
+        auto_now_add=True,
+        db_default=Now(),
+        help_text="CSV 檔案的日期",
     )
 
     class Meta:
@@ -85,7 +90,7 @@ class BusinessIndustry(models.Model):
     business = models.ForeignKey(
         TaxRegistration,
         on_delete=models.CASCADE,
-        related_name="industries",  # ✅ 可以用 company.industries.all() 查詢
+        related_name="industries",
         verbose_name="營業人",
     )
 
@@ -93,7 +98,7 @@ class BusinessIndustry(models.Model):
         "行業代號",
         max_length=20,
         blank=True,
-        db_index=True,  # ✅ 常用來查詢"所有從事某行業的公司"
+        db_index=True,  # 查詢"所有從事某行業的公司"
     )
 
     industry_name = models.CharField("行業名稱", max_length=255, blank=True)
@@ -108,10 +113,12 @@ class BusinessIndustry(models.Model):
         verbose_name_plural = "營業項目"
         ordering = ["business", "order"]
 
-        # ✅ 確保同一公司不會有重複的行業代號
-        unique_together = [("business", "industry_code")]
-
-        # ✅ 複合索引:查詢效能優化
+        constraints = [
+            models.UniqueConstraint(
+                fields=["business", "industry_code"], name="unique_business_industry"
+            )
+        ]
+        # 複合索引:查詢效能優化
         indexes = [
             # 查詢"所有從事某行業的公司"
             models.Index(fields=["industry_code", "business"], name="idx_ind_code_biz"),
@@ -255,69 +262,3 @@ class ImportProgress(models.Model):
         if self.total_batches > 0:
             return (self.current_batch / self.total_batches) * 100
         return 0
-
-
-# from django.db import models
-# from django.db.models.functions import Now
-
-
-# class TaxRegistration(models.Model):
-#     ban = models.CharField("統一編號", max_length=8, primary_key=True, db_index=True)
-#     headquarters_ban = models.CharField(
-#         "總機構統一編號", max_length=8, blank=True, null=True
-#     )
-#     business_name = models.CharField("營業人名稱", max_length=200, db_index=True)
-#     business_address = models.CharField("營業地址", max_length=255)
-
-#     capital_amount = models.BigIntegerField("資本額", null=True, blank=True)
-#     established_date = models.CharField("設立日期", max_length=7)  # YYYMMDD 民國日期
-#     business_type = models.CharField("組織別", max_length=100)
-#     is_use_invoice = models.BooleanField("使用統一發票", default=False)
-
-#     industry_code = models.CharField("行業代號", max_length=10, db_index=True)
-#     industry_name = models.CharField("行業名稱", max_length=100)
-
-#     industry_code_1 = models.CharField(
-#         "行業代號1", max_length=10, blank=True, null=True
-#     )
-#     industry_name_1 = models.CharField(
-#         "行業名稱1", max_length=100, blank=True, null=True
-#     )
-
-#     industry_code_2 = models.CharField(
-#         "行業代號2", max_length=10, blank=True, null=True
-#     )
-#     industry_name_2 = models.CharField(
-#         "行業名稱2", max_length=100, blank=True, null=True
-#     )
-
-#     industry_code_3 = models.CharField(
-#         "行業代號3", max_length=10, blank=True, null=True
-#     )
-#     industry_name_3 = models.CharField(
-#         "行業名稱3", max_length=100, blank=True, null=True
-#     )
-
-#     created_at = models.DateTimeField("建立時間", auto_now_add=True, db_default=Now())
-#     updated_at = models.DateTimeField("更新時間", auto_now=True, db_default=Now())
-
-#     class Meta:
-#         db_table = "tax_registration"
-#         verbose_name = "營業登記"
-#         verbose_name_plural = "營業登記"
-#         indexes = [
-#             models.Index(fields=["business_name"]),
-#             models.Index(fields=["industry_code"]),
-#         ]
-
-#     def __str__(self):
-#         return f"{self.ban} - {self.business_name}"
-
-
-# class DataImportError(models.Model):
-#     row_number = models.IntegerField()
-#     ban = models.CharField(max_length=8, null=True)
-#     error_type = models.CharField(max_length=50)
-#     error_message = models.TextField()
-#     raw_data = models.JSONField()
-#     created_at = models.DateTimeField(auto_now_add=True)
