@@ -10,42 +10,45 @@ dry-run() {
 }
 
 update-import() {
-    python -m core.manage load_tax_registration --truncate
+    docker compose exec django python -m core.manage load_tax_registration --truncate
 
 }
 
 resume() {
-    python -m core.manage load_tax_registration --resume
+    docker compose django python -m core.manage load_tax_registration --resume
 }
 
 # ========== Django cocmmands ===========
 
 server() {
-    python -m core.manage runserver
+    # For local run
+    poetry run python -m core.manage runserver
 }
 
 create-admin() {
-
-    python -m core.manage createsuperuser --noinput || echo "超級管理員可能已存在，跳過建立。"
+    # For local run
+    poetry run python -m core.manage createsuperuser --noinput || echo "超級管理員可能已存在，跳過建立。"
 }
 
 migrations() {
-    python -m core.manage makemigrations $@
+    # Run in docker
+    docker compose exec django python -m core.manage makemigrations $@
 }
 
 migrate() {
-    python -m core.manage migrate
+    # Run in docker
+    docker compose exec django python -m core.manage migrate
 }
 
 
 # ========== Docker cocmmands ===========
 
 up() {
-    docker-compose -f docker-compose.yml up $@ --build -d 
+    docker compose -f docker-compose.yml up $@ --build -d 
 }
 
 down() {
-    docker-compose -f docker-compose.yml down
+    docker compose -f docker-compose.yml down
 }
 
 app-shell() {
