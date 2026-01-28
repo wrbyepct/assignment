@@ -98,7 +98,6 @@ flowchart TB
 | Docker Compose | 2.0+ | ✅ 必要 | 多容器編排 |
 | AWS CLI | 2.0+ | ✅ 必要 | AWS 憑證設定 |
 | Git | 2.0+ | ✅ 必要 | 版本控制 |
-| Poetry | 1.7+ | ⚪ 可選 | 本地開發用 |
 
 ### macOS 安裝
 
@@ -143,10 +142,10 @@ wsl --install
 
 #### 步驟二：安裝 Docker Desktop 並啟用 WSL 整合
 
-1. 下載並安裝 [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+1. 下載並安裝 [Docker Desktop](https://docs.docker.com/desktop/)
 2. 安裝時勾選 **Use WSL 2 instead of Hyper-V**
 3. 安裝完成後，重新啟動
-4. 首次啟動 Docker Desktop 需同意服務條款
+4. 啟動 Docker Desktop，首次啟動需同意服務條款
 
 #### 步驟三：在 WSL 中安裝相依套件
 ```bash
@@ -198,8 +197,6 @@ rm -rf aws awscliv2.zip
 # 安裝 Git
 sudo apt install -y git
 
-# （可選）安裝 Poetry
-curl -sSL https://install.python-poetry.org | python3 -
 
 # 驗證安裝
 docker --version
@@ -214,7 +211,7 @@ Terraform 需要一個具有足夠權限的 IAM User 來建立 CloudWatch 相關
 
 #### 方法一：透過 AWS Console 建立
 
-1. 登入 [AWS Console](https://console.aws.amazon.com/)
+1. 登入 AWS Console
 2. 前往 **IAM** → **Users** → **Create user**
 3. 輸入使用者名稱：`terraform-deployer`
 4. 選擇 **Attach policies directly**，附加以下政策：
@@ -254,7 +251,7 @@ aws iam create-access-key --user-name terraform-deployer
 ### Step 1：Clone 專案
 
 ```bash
-git https://github.com/wrbyepct/assignment.git
+git clone https://github.com/wrbyepct/assignment.git
 cd assignment
 ```
 
@@ -588,6 +585,7 @@ CommandError: 執行失敗: 測試失敗場景！
 3. 執行斷點續傳：
 
 ```bash
+# 等五分鐘後跑斷點續傳(測試用心跳時間)
 ./run resume
 ```
 
