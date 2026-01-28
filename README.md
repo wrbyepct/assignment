@@ -2316,10 +2316,104 @@ Docker 日誌送至 CloudWatch 有多種常見方案，以下為綜合比較：
 
 ## 🧹 資源清理
 
-> 📝 待補充
+當測試完成後，請依照以下步驟清理資源，避免產生不必要的 AWS 費用。
+
+### 清理順序
+
+```mermaid
+flowchart LR
+    A["1️⃣ 停止 Docker"] --> B["2️⃣ 銷毀 AWS 資源"]
+    B --> C["3️⃣ 清理本地檔案"]
+    
+    style A fill:#e3f2fd
+    style B fill:#fff3e0
+    style C fill:#f3e5f5
+```
 
 ---
 
-## 📚 附錄
+### Step 1：停止 Docker Compose
 
-> 📝 待補充
+```bash
+./run down
+```
+
+這會停止並移除所有 Container，但保留 Volume（資料庫資料）。
+
+如需完全清除 Volume：
+
+```bash
+docker compose down -v
+```
+
+---
+
+### Step 2：銷毀 AWS 資源（Terraform）
+
+```bash
+./run tf-destroy
+```
+
+系統會提示確認：
+
+```
+確定要繼續嗎？(yes/no): yes
+```
+
+輸入 `yes` 後，Terraform 會銷毀以下資源：
+
+| 資源類型 | 名稱 |
+|----------|------|
+| IAM User | `etl-log-demo-log-writer` |
+| IAM Policy | `etl-log-demo-cloudwatch-logs-write` |
+| CloudWatch Log Group | `/docker/etl` |
+| CloudWatch Metric Filters | `ErrorCount`、`ETLCompleted` 等 |
+| CloudWatch Alarms | `high-error-count`、`etl-failed` |
+| CloudWatch Dashboard | `etl-dashboard` |
+| SNS Topic | `etl-alerts` |
+
+> ⚠️ **注意**：Log Group 內的日誌資料會一併刪除，無法復原。
+
+---
+
+### Step 3：清理本地檔案（選用）
+
+如需清除自動產生的憑證檔案：
+
+```bash
+# 清除 CloudWatch Agent 憑證
+rm -f docker/cloudwatch-agent/.aws/credentials
+
+# 清除環境變數檔案（內含 AWS 憑證）
+rm -f .env.local
+```
+
+---
+
+### 一鍵清理（完整）
+
+如果想一次完成所有清理：
+
+```bash
+# 停止 Docker + 銷毀 AWS 資源
+./run cleanup
+```
+
+此指令會依序執行：
+1. `docker compose down`
+2. `terraform destroy -auto-approve`
+
+---
+
+### 清理確認 Checklist
+
+| # | 項目 | 確認方式 | 狀態 |
+|---|------|----------|------|
+| 1 | Docker 已停止 | `docker ps` 無相關 container | ⬜ |
+| 2 | Volume 已清除 | `docker volume ls` 無 `postgres_data`、`django_logs` | ⬜ |
+| 3 | AWS IAM User 已刪除 | AWS Console → IAM → Users | ⬜ |
+| 4 | CloudWatch Log Group 已刪除 | AWS Console → CloudWatch → Log groups | ⬜ |
+| 5 | SNS Topic 已刪除 | AWS Console → SNS → Topics | ⬜ |
+| 6 | 本地憑證已清除 | 檢查 `.env.local` 是否存在 | ⬜ |
+
+---
