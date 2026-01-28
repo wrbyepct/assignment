@@ -7,10 +7,10 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    environment:
-      POSTGRES_DB: my_project_db
-      POSTGRES_USER: my_db_user
-      POSTGRES_PASSWORD: my_password
+    environment: 
+      POSTGRES_DB: ${POSTGRES_DB:-my_project_db}
+      POSTGRES_USER: ${POSTGRES_USER:-my_db_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-my_password}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U my_db_user -d my_project_db"]
       interval: 10s
