@@ -84,7 +84,7 @@ services:
     volumes:
       # 掛載 Agent 設定檔
       - ./docker/cloudwatch-agent/config.json:/etc/cwagentconfig/config.json:ro
-      - ./docker/cloudwatch-agent/credentials:/root/.aws/credentials:ro
+      - ./docker/cloudwatch-agent/.aws/credentials:/root/.aws/credentials:ro
       # 掛載 Django log 目錄（唯讀）
       - django_logs:/var/log/django:ro
     restart: unless-stopped

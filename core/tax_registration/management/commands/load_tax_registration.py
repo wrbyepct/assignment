@@ -98,6 +98,7 @@ class Command(BaseCommand):
         self.tracker.start()
 
         try:
+            raise Exception("Test for fail...!")
             self.handle_successful_etl_job()
         except Exception as e:
             self.handle_failed_etl_job(e)
@@ -339,7 +340,7 @@ class Command(BaseCommand):
 
     def _should_continue_on_error(self) -> bool:
         """詢問是否繼續"""
-        if self.dry_run:
+        if self.dry_run or self.auto:
             return True
 
         answer = input("\n發生錯誤,是否繼續下一批次? (yes/no): ")

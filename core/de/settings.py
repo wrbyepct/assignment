@@ -5,6 +5,7 @@ Django settings for de project.
 import environ
 from pathlib import Path
 import boto3
+import logging
 
 # ==================== 初始化 environ ====================
 env = environ.Env(
@@ -122,6 +123,65 @@ Q_CLUSTER = {
 # ==================== Logging ====================
 
 
+class PrettyFormatter(logging.Formatter):
+    """簡單彩色 formatter，顯示 extra"""
+
+    COLORS = {
+        "DEBUG": "\033[36m",
+        "INFO": "\033[32m",
+        "WARNING": "\033[33m",
+        "ERROR": "\033[31m",
+        "CRITICAL": "\033[35m",
+    }
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+
+    SKIP = {
+        "name",
+        "msg",
+        "args",
+        "created",
+        "filename",
+        "funcName",
+        "levelname",
+        "levelno",
+        "lineno",
+        "module",
+        "msecs",
+        "pathname",
+        "process",
+        "processName",
+        "relativeCreated",
+        "stack_info",
+        "exc_info",
+        "exc_text",
+        "thread",
+        "threadName",
+        "taskName",
+        "message",
+        "asctime",
+    }
+
+    def format(self, record):
+        color = self.COLORS.get(record.levelname, self.RESET)
+        time = self.formatTime(record, "%H:%M:%S")
+
+        # 收集 extra
+        extras = {k: v for k, v in record.__dict__.items() if k not in self.SKIP}
+        extra_str = f" | {extras}" if extras else ""
+
+        # 前後空行 + 醒目格式
+        return (
+            f"\n"
+            f"{color}{self.BOLD}[{record.levelname}]{self.RESET} "
+            f"[{time}] "
+            f"[{record.name}] "
+            f"{record.getMessage()}"
+            f"{extra_str}"
+            f"\n"
+        )
+
+
 boto3_logs_client = boto3.client(
     "logs",
     aws_access_key_id=env("AWS_ACCESS_KEY_ID"),
@@ -144,8 +204,10 @@ LOGGING = {
                 "asctime": "timestamp",
             },
             "datefmt": "%Y-%m-%dT%H:%M:%S%z",
-            "json_indent": 2 if DEBUG else None,
             "json_ensure_ascii": False,  # Ensure chinese characters display
+        },
+        "pretty": {
+            "()": PrettyFormatter,
         },
     },
     # ===== Handlers =====
@@ -156,10 +218,11 @@ LOGGING = {
             "boto3_client": boto3_logs_client,
             "log_group": env("CLOUDWATCH_LOG_GROUP", default="/docker/etl"),
             "stream_name": "console",
+            "formatter": "json",
         },
         "console": {
             "class": "logging.StreamHandler",
-            "formatter": "json",
+            "formatter": "pretty",
             "stream": "ext://sys.stdout",
         },
         "file": {
