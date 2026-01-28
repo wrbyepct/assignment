@@ -482,7 +482,7 @@ Dry Run 模式會執行完整的資料擷取與驗證流程，但**不會實際�
 
 ---
 
-### 4.3 ETL 失敗場景測試
+### ETL 失敗場景測試
 
 測試 ETL 失敗時的告警機制和錯誤記錄。
 
@@ -757,8 +757,113 @@ CommandError: 執行失敗: 測試失敗場景！
 
 ## 📝 題目四：Docker Log 蒐集 - Log Implement
 
-> 📝 待補充
+### 1. 設計概念
 
+本系統採用**雙路徑收集策略**，同時支援題目要求的兩種 Docker log 收集場景：
+
+| 收集路徑 | 來源 | 工具 | 適用場景 |
+|----------|------|------|----------|
+| **Console 路徑** | stdout/stderr | Watchtower | 應用程式直接輸出的即時日誌 |
+| **File 路徑** | 實體檔案 | CloudWatch Agent | 需要持久化或輪替的日誌檔案 |
+
+**核心設計原則：**
+
+- **單一 Log Group，多 Stream 分流**：所有日誌集中到 `/docker/etl`，依來源分 `console` 與 `file` 兩個 Stream
+- **JSON 結構化日誌**：使用 `python-json-logger` 確保日誌可被 CloudWatch Metric Filter 解析
+- **統一時間戳格式**：ISO 8601 格式，便於跨 Stream 查詢與排序
+
+---
+
+### 2. Log 收集架構圖
+
+```mermaid
+flowchart TB
+    subgraph Docker["🐳 Docker Container"]
+        APP[Django ETL Application]
+        LOG_FILE[("/var/log/django/etl.log")]
+        
+        APP -->|"logging.info()"| CONSOLE[stdout/stderr]
+        APP -->|"RotatingFileHandler"| LOG_FILE
+    end
+
+    subgraph Collectors["📡 Log Collectors"]
+        WT[Watchtower Handler<br/>in Django Process]
+        CWA[CloudWatch Agent<br/>Sidecar Container]
+    end
+
+    subgraph AWS["☁️ AWS CloudWatch"]
+        LG[("Log Group<br/>/docker/etl")]
+        
+        subgraph Streams["Log Streams"]
+            S1[console]
+            S2[file]
+        end
+        
+        LG --> S1
+        LG --> S2
+    end
+
+    CONSOLE -.->|"直接推送"| WT
+    WT -->|"PutLogEvents API"| S1
+    
+    LOG_FILE -.->|"Volume 掛載"| CWA
+    CWA -->|"PutLogEvents API"| S2
+
+    style WT fill:#ff9800,color:#000
+    style CWA fill:#2196f3,color:#fff
+    style LG fill:#9c27b0,color:#fff
+```
+
+---
+
+### 3. 技術選型：Log 收集方案比較
+
+Docker 日誌送至 CloudWatch 有多種常見方案，以下為綜合比較：
+
+| 方案 | 收集來源 | 部署方式 | 優點 | 缺點 |
+|------|----------|----------|------|------|
+| **Docker awslogs driver** | stdout/stderr | Docker daemon 設定 | 零程式碼、原生支援 | 憑證需在 host 層級、無法收集檔案 |
+| **CloudWatch Agent** | 檔案 | Sidecar container | 支援檔案輪替、可收集 metrics | 需額外 container、有 flush 延遲 |
+| **Watchtower** | Python logging | Application 內建 | 即時推送、可加 extra fields | 僅限 Python、與應用耦合 |
+| **Fluent Bit** | stdout + 檔案 | Sidecar container | 輕量、多 output 支援 | 需學習設定語法、非 AWS 原生 |
+| **AWS FireLens** | stdout/stderr | ECS 原生整合 | ECS 深度整合、支援 Fluent Bit | 僅限 ECS 環境 |
+
+#### 本專案選擇：Watchtower + CloudWatch Agent
+
+| 選擇理由 | 說明 |
+|----------|------|
+| **滿足題目要求** | 同時示範 console 與 file 兩種收集方式 |
+| **AWS 原生整合** | 無需額外學習 Fluent Bit 設定語法 |
+| **Django 友善** | Watchtower 可直接作為 logging handler，支援 `extra` 欄位 |
+| **本地開發友善** | 不依賴 ECS，Docker Compose 即可運行 |
+
+
+---
+
+### 4. 建置手冊
+
+#### 關鍵設定檔
+
+| 檔案 | 用途 |
+|------|------|
+| `core/de/settings.py` | Django logging 設定，定義 Watchtower handler |
+| `docker/cloudwatch-agent/config.json` | Agent 收集規則，指定檔案路徑與 Stream |
+| `docker/cloudwatch-agent/.aws/credentials` | Agent 專用 IAM 憑證（由 setup 自動產生） |
+
+#### 驗證日誌收集
+
+```bash
+# 1. 產生測試日誌
+./run django-shell
+>>> import logging
+>>> logger = logging.getLogger('tax_registration.etl')
+>>> logger.info("測試 console 路徑", extra={"event": "test"})
+
+# 2. 檢查 CloudWatch Console
+#    - Log Group: /docker/etl
+#    - Stream: console（應看到上述日誌）
+#    - Stream: file（應看到相同日誌，因為同時寫入檔案）
+```
 ---
 
 ## 🧹 資源清理
