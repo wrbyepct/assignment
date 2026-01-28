@@ -1778,8 +1778,212 @@ flowchart LR
 
 ## 🐳 題目二：數據應用服務
 
-> 📝 待補充
+### 1. 設計概念
 
+題目二要求將題目一的 ETL 服務容器化，並增加排程更新機制。本專案的設計重點：
+
+| 要求 | 實作方式 |
+|------|----------|
+| **數據服務容器化** | Docker Compose 編排多服務架構 |
+| **Log 可解讀性高** | JSON 結構化日誌 + 自訂 extra 欄位 |
+| **定時排程** | Django-Q2 搭配 Admin UI 管理 |
+
+#### 容器化設計原則
+
+| 原則 | 實踐 |
+|------|------|
+| **單一職責** | 每個 Container 只負責一件事（Django / PostgreSQL / Q-Worker / CloudWatch Agent） |
+| **服務依賴** | 使用 `depends_on` + `healthcheck` 確保啟動順序 |
+| **非 Root 執行** | Django Container 使用 `django` 用戶執行，提升安全性 |
+| **Volume 持久化** | 資料庫資料與 Log 檔案使用 Named Volume |
+
+---
+
+### 2. 架構圖
+
+```mermaid
+flowchart TB
+    subgraph DockerCompose["🐳 Docker Compose"]
+        subgraph Services["服務層"]
+            DJ["django<br/>:8000<br/>ETL + Web"]
+            QW["q-worker<br/>Django-Q2<br/>排程執行"]
+            CWA["cloudwatch-agent<br/>Log 收集"]
+        end
+        
+        subgraph Data["資料層"]
+            PG[("postgres<br/>:5432")]
+            VOL_DB[("postgres_data<br/>Volume")]
+            VOL_LOG[("django_logs<br/>Volume")]
+        end
+        
+        DJ <-->|ORM| PG
+        QW <-->|任務佇列| PG
+        PG --- VOL_DB
+        
+        DJ -->|寫入| VOL_LOG
+        QW -->|寫入| VOL_LOG
+        CWA -->|讀取| VOL_LOG
+    end
+    
+    subgraph External["外部"]
+        USER[👤 使用者]
+        AWS[☁️ CloudWatch]
+    end
+    
+    USER -->|HTTP| DJ
+    USER -->|Admin UI| DJ
+    CWA -->|PutLogEvents| AWS
+
+    style DJ fill:#4caf50,color:#fff
+    style QW fill:#ff9800,color:#fff
+    style PG fill:#2196f3,color:#fff
+    style CWA fill:#9c27b0,color:#fff
+```
+
+#### 服務說明
+
+| 服務 | Image | 職責 |
+|------|-------|------|
+| `django` | 自建 | Django Web Server + ETL 入口 |
+| `postgres` | postgres:15 | 資料儲存 |
+| `q-worker` | 自建（同 django） | Django-Q2 Worker，執行排程任務 |
+| `cloudwatch-agent` | amazon/cloudwatch-agent | 收集 Log 檔案並推送至 CloudWatch |
+
+---
+
+### 3. 技術選型理由
+
+#### 排程方案比較
+
+```mermaid
+flowchart LR
+    subgraph 方案
+        A["Container Cron"]
+        B["Celery Beat"]
+        C["Django-Q2"]
+    end
+    
+    A -->|"❌ 需 root 權限"| X1["不適合"]
+    B -->|"❌ 需要 Redis/RabbitMQ"| X2["過度複雜"]
+    C -->|"✅ 純 Django ORM"| X3["本專案選擇"]
+
+    style C fill:#c8e6c9
+    style X3 fill:#c8e6c9
+```
+
+| 方案 | 優點 | 缺點 | 適用場景 |
+|------|------|------|----------|
+| **Container Cron** | 簡單 | 需 root、無 retry、難監控 | 極簡單任務 |
+| **Celery Beat** | 功能強大、分散式 | 需額外 Broker（Redis） | 大型系統 |
+| **Django-Q2** | 純 ORM、Admin UI 管理、內建 retry | 不支援分散式 | 中小型 Django 專案 |
+
+**選擇 Django-Q2 的理由**：
+- 不需要額外的 Redis/RabbitMQ，直接使用 PostgreSQL 作為 Broker
+- 內建 Admin UI，可在網頁上管理排程與查看執行結果
+- 支援 timeout 與 retry，適合長時間執行的 ETL 任務
+
+#### Log 可解讀性設計
+
+| 設計 | 說明 |
+|------|------|
+| **JSON 格式** | 使用 `python-json-logger`，便於 CloudWatch Metric Filter 解析 |
+| **Extra 欄位** | 每筆 Log 帶有 `event`、`job_run_id`、`batch_num` 等上下文 |
+| **Console 彩色輸出** | 開發時使用 `PrettyFormatter`，方便人眼閱讀 |
+
+Log 範例：
+```json
+{
+  "timestamp": "2026-01-28T10:30:00+0800",
+  "level": "INFO",
+  "name": "tax_registration.etl",
+  "message": "批次處理完成",
+  "event": "batch_completed",
+  "job_run_id": 42,
+  "batch_num": 5,
+  "records_success": 49850
+}
+```
+
+#### Dockerfile 最佳化
+
+| 技術 | 效果 |
+|------|------|
+| **Multi-stage Build** | 最終 Image 不含編譯工具（gcc），體積減少約 200MB |
+| **Non-root User** | 以 `django` 用戶執行，避免容器逃逸風險 |
+| **PYTHONUNBUFFERED=1** | Log 即時輸出，不經過緩衝區 |
+| **Healthcheck** | 確保服務真正可用後才接受流量 |
+
+---
+
+### 4. 程式邏輯說明
+
+#### Django-Q2 設定
+
+```
+Q_CLUSTER = {
+    "name": "ETL_Cluster",
+    "workers": 1,              # 單一 Worker 避免並發 ETL
+    "timeout": 7200,           # 2 小時（ETL 可能跑很久）
+    "retry": 7300,             # 重試時間略長於 timeout
+    "orm": "default",          # 使用 PostgreSQL 作為 Broker
+    "catch_up": False,         # 不補跑錯過的任務
+}
+```
+
+**關鍵參數說明**
+
+| 參數 | 值 | 理由 |
+|------|-----|------|
+| `workers: 1` | 單一 Worker | ETL 是 full refresh，同時跑兩個會衝突 |
+| `timeout: 7200` | 2 小時 | 160 萬筆資料完整匯入約需 30-60 分鐘，預留緩衝 |
+| `catch_up: False` | 不補跑 | ETL 每次都是 truncate + 重建，補跑沒意義 |
+
+#### 排程任務定義
+
+`tasks.py` 中定義的任務：
+
+| 函數 | 說明 |
+|------|------|
+| `run_tax_import()` | 完整 ETL（truncate + 匯入） |
+| `run_tax_import_dry_run()` | Dry Run 模式（測試用） |
+
+#### 服務啟動順序
+
+```mermaid
+sequenceDiagram
+    participant DC as Docker Compose
+    participant PG as postgres
+    participant DJ as django
+    participant QW as q-worker
+    participant CWA as cloudwatch-agent
+
+    DC->>PG: 啟動
+    PG->>PG: healthcheck (pg_isready)
+    PG-->>DC: healthy ✓
+    
+    DC->>DJ: 啟動 (depends_on postgres)
+    DJ->>DJ: migrate + runserver
+    DJ->>DJ: healthcheck
+    DJ-->>DC: healthy ✓
+    
+    DC->>QW: 啟動 (depends_on django)
+    QW->>QW: qcluster
+    
+    DC->>CWA: 啟動 (depends_on django)
+    CWA->>CWA: 讀取 config.json
+```
+
+#### Volume 設計
+
+| Volume | 掛載點 | 用途 |
+|--------|--------|------|
+| `postgres_data` | `/var/lib/postgresql/data` | 資料庫持久化 |
+| `django_logs` | `/var/log/django` | Django 與 Q-Worker 共享 Log 目錄 |
+
+`django_logs` 被三個服務共用：
+- `django`：寫入 Log
+- `q-worker`：寫入 Log
+- `cloudwatch-agent`：讀取 Log 並推送至 AWS
 ---
 
 ## 🏗️ 題目三：Docker Log 蒐集 - IaC
