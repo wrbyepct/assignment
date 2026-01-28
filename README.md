@@ -896,40 +896,6 @@ erDiagram
 
 分離成獨立表的原因：進度資訊更新頻繁（每批次一次），與 `ETLJobRun` 的其他欄位更新頻率不同，分離可減少 row lock 競爭。
 
-##### 索引設計
-
-```mermaid
-graph LR
-    subgraph TaxRegistration
-        A[ban - PK] 
-        B[headquarters_ban - Index]
-        C[business_name - Index]
-        D[capital_amount - Index]
-        E[business_type - Index]
-        F[created_at - Index]
-    end
-    
-    subgraph BusinessIndustry
-        G[industry_code - Index]
-        H["(industry_code, business) - Composite"]
-        I["(business, industry_code) - Unique"]
-    end
-    
-    subgraph ETL追蹤
-        J[status - Index]
-        K[started_at - Index]
-        L["(error_type, created_at) - Composite"]
-    end
-```
-
-| 表 | 索引 | 查詢場景 |
-|-----|------|----------|
-| `TaxRegistration` | `headquarters_ban` | 查詢某總機構下的所有分公司 |
-| `TaxRegistration` | `business_name` | 模糊搜尋公司名稱 |
-| `TaxRegistration` | `capital_amount` | 依資本額範圍篩選 |
-| `TaxRegistration` | `created_at` | 查詢某時間後新增的資料 |
-| `BusinessIndustry` | `(industry_code, business)` | 查詢某行業的所有公司（覆蓋索引） |
-| `DataImportError` | `(error_type, created_at)` | 查詢某類型的最近錯誤 |
 
 
 #### ETL Pipeline 整體流程
@@ -1041,6 +1007,261 @@ graph LR
 
 這種設計確保 160 萬筆資料中即使有少量問題資料，也不會阻擋整體 ETL 流程的完成。
 ---
+
+### 2. 架構圖
+
+#### ETL 資料流程總覽
+
+```mermaid
+flowchart TB
+    subgraph External["🌐 外部資料來源"]
+        GOV[("政府開放資料平台<br/>data.gov.tw")]
+        CSV[("CSV 檔案<br/>304MB / 160萬筆")]
+    end
+
+    subgraph Extract["📥 Extract 階段"]
+        EXT[CSVExtractor]
+        STREAM["HTTP Stream<br/>串流下載"]
+        CHUNK["Chunked Reading<br/>分批讀取 50,000筆/批"]
+    end
+
+    subgraph Transform["🔄 Transform 階段"]
+        TRANS[TaxDataTransformer]
+        VALID["資料驗證<br/>• 必填欄位檢查<br/>• 統一編號格式驗證"]
+        CLEAN["資料清洗<br/>• 移除空白列<br/>• 字串 trim"]
+        DEDUP["去重處理<br/>• 批次內去重<br/>• 記錄 DUPLICATE 錯誤"]
+    end
+
+    subgraph Load["💾 Load 階段"]
+        LOADER[BulkLoader]
+        COPY["PostgreSQL COPY<br/>高效批次寫入"]
+        BULK["bulk_create<br/>行業資料寫入"]
+        TXN["Transaction<br/>原子性保證"]
+    end
+
+    subgraph Database["🗄️ PostgreSQL"]
+        TAX[(TaxRegistration<br/>營業登記主表)]
+        IND[(BusinessIndustry<br/>營業項目)]
+    end
+
+    subgraph Tracking["📊 ETL Tracking"]
+        TRACKER[ETLTracker]
+        JOB[(ETLJobRun<br/>執行紀錄)]
+        ERR[(DataImportError<br/>錯誤明細)]
+        PROG[(ImportProgress<br/>斷點續傳)]
+    end
+
+    %% 資料流
+    GOV -->|"HTTP GET"| CSV
+    CSV -->|"stream=True"| EXT
+    EXT --> STREAM --> CHUNK
+    
+    CHUNK -->|"DataFrame<br/>每批 50,000 筆"| TRANS
+    TRANS --> VALID --> CLEAN --> DEDUP
+    
+    DEDUP -->|"df_clean"| LOADER
+    DEDUP -->|"errors[]"| TRACKER
+    
+    LOADER --> TXN
+    TXN --> COPY -->|"主表資料"| TAX
+    TXN --> BULK -->|"行業資料"| IND
+    
+    %% 追蹤流
+    TRACKER --> JOB
+    TRACKER --> ERR
+    TRACKER --> PROG
+    
+    TAX -.->|"FK"| IND
+
+    %% 樣式
+    style External fill:#e3f2fd
+    style Extract fill:#fff3e0
+    style Transform fill:#f3e5f5
+    style Load fill:#e8f5e9
+    style Database fill:#fce4ec
+    style Tracking fill:#fff8e1
+```
+
+#### 批次處理流程
+
+單一批次（Chunk）從讀取到寫入的完整流程：
+
+```mermaid
+flowchart TB
+    subgraph INIT["🚀 初始化"]
+        START["使用者執行<br/>./run etl"] --> CREATE_JOB["建立 ETLJobRun<br/>status = running"]
+        CREATE_JOB --> FETCH["CSVExtractor.fetch_chunks()<br/>開始串流下載 CSV"]
+    end
+
+    subgraph LOOP["🔄 批次迴圈 "]
+        direction TB
+        
+        GET_CHUNK["取得下一批 DataFrame<br/>50,000 筆資料"]
+        
+        subgraph TRANSFORM["Transform 階段"]
+            T1["驗證必填欄位"]
+            T2["驗證統一編號格式"]
+            T3["移除批次內重複"]
+            T1 --> T2 --> T3
+        end
+        
+        subgraph LOAD["Load 階段"]
+            L1["BEGIN TRANSACTION"]
+            L2["COPY 寫入主表"]
+            L3["bulk_create 寫入行業表"]
+            L4["COMMIT"]
+            L1 --> L2 --> L3 --> L4
+        end
+        
+        GET_CHUNK --> TRANSFORM
+        TRANSFORM -->|"df_clean"| LOAD
+        TRANSFORM -->|"errors"| RECORD_ERR["記錄錯誤到<br/>DataImportError"]
+        LOAD --> UPDATE_PROG["更新 ImportProgress<br/>last_successful_batch++"]
+    end
+
+    subgraph FINISH["✅ 完成"]
+        COMPLETE["更新 ETLJobRun<br/>status = success"]
+        SUMMARY["印出統計摘要<br/>總筆數/成功/失敗"]
+        COMPLETE --> SUMMARY
+    end
+
+    INIT --> LOOP
+    LOOP -->|"所有批次處理完畢"| FINISH
+
+    style INIT fill:#e3f2fd
+    style TRANSFORM fill:#f3e5f5
+    style LOAD fill:#e8f5e9
+    style FINISH fill:#c8e6c9
+```
+
+#### 單一批次處理細節
+
+以下展示每個批次內部的資料流動：
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  批次 N (50,000 筆原始資料)                                          │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐          │
+│  │   原始資料    │    │   清洗後資料  │    │   寫入結果   │          │
+│  │   50,000 筆  │ ──▶│   49,850 筆  │ ──▶│   49,850 筆  │          │
+│  └──────────────┘    └──────────────┘    └──────────────┘          │
+│         │                   │                                       │
+│         │ 驗證失敗          │                                       │
+│         ▼                   │                                       │
+│  ┌──────────────┐          │                                       │
+│  │   錯誤記錄    │          │                                       │
+│  │   150 筆     │◀─────────┘                                       │
+│  │ • INVALID_BAN: 80                                               │
+│  │ • DUPLICATE: 70                                                  │
+│  └──────────────┘                                                   │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+#### 斷點續傳機制
+
+當 ETL 中斷後，如何從上次成功的批次繼續：
+
+```mermaid
+flowchart LR
+    subgraph 首次執行
+        A1[開始 ETL] --> A2[批次 1 ✓]
+        A2 --> A3[批次 2 ✓]
+        A3 --> A4[批次 3 ✓]
+        A4 --> A5[批次 4 ✓]
+        A5 --> A6[批次 5 ✗]
+        A6 --> A7[中斷!]
+    end
+
+    subgraph ImportProgress
+        B1["last_successful_batch = 4"]
+    end
+
+    subgraph 續傳執行
+        C1["./run resume"] --> C2["get_resume_batch()<br/>返回 5"]
+        C2 --> C3[跳過批次 1-4]
+        C3 --> C4[從批次 5 開始]
+        C4 --> C5[批次 5 ✓]
+        C5 --> C6[批次 6 ✓]
+        C6 --> C7[...]
+    end
+
+    A7 -.->|"記錄進度"| B1
+    B1 -.->|"讀取進度"| C2
+
+    style A6 fill:#ffcdd2
+    style A7 fill:#ffcdd2
+    style C5 fill:#c8e6c9
+    style C6 fill:#c8e6c9
+```
+
+#### 錯誤處理流程
+
+```mermaid
+flowchart TB
+    START[處理批次] --> TRANSFORM[Transform 階段]
+    
+    TRANSFORM --> CHECK{驗證結果}
+    
+    CHECK -->|"全部通過"| LOAD[Load 階段]
+    CHECK -->|"部分失敗"| RECORD[記錄錯誤]
+    
+    RECORD --> SAVE_ERR["儲存到 DataImportError<br/>• error_type<br/>• error_message<br/>• raw_data"]
+    SAVE_ERR --> FILTER[過濾掉錯誤資料]
+    FILTER --> LOAD
+    
+    LOAD --> LOAD_CHECK{寫入結果}
+    
+    LOAD_CHECK -->|"成功"| UPDATE[更新進度]
+    LOAD_CHECK -->|"失敗"| ROLLBACK[Transaction Rollback]
+    
+    ROLLBACK --> EXPORT["匯出錯誤批次<br/>到 CSV 檔案"]
+    EXPORT --> DECIDE{是否繼續?}
+    
+    DECIDE -->|"是"| NEXT[處理下一批次]
+    DECIDE -->|"否"| FAIL[標記任務失敗]
+    
+    UPDATE --> NEXT
+    
+    NEXT --> END[繼續迴圈]
+    FAIL --> END_FAIL[結束執行]
+
+    style RECORD fill:#fff3e0
+    style ROLLBACK fill:#ffcdd2
+    style EXPORT fill:#ffcdd2
+    style UPDATE fill:#c8e6c9
+```
+
+#### 資料驗證規則
+
+```mermaid
+flowchart LR
+    subgraph 輸入
+        RAW[原始 DataFrame<br/>50,000 筆]
+    end
+
+    subgraph 驗證規則
+        R1["1️⃣ 移除空白列<br/>dropna(how='all')"]
+        R2["2️⃣ 必填欄位<br/>統一編號、營業人名稱"]
+        R3["3️⃣ 統一編號格式<br/>必須是 8 位數字"]
+        R4["4️⃣ 批次內去重<br/>保留第一筆"]
+    end
+
+    subgraph 輸出
+        CLEAN[清洗後 DataFrame]
+        ERRORS["錯誤清單<br/>• INVALID_BAN<br/>• DUPLICATE"]
+    end
+
+    RAW --> R1 --> R2 --> R3 --> R4
+    R4 --> CLEAN
+    R4 --> ERRORS
+
+    style RAW fill:#e3f2fd
+    style CLEAN fill:#c8e6c9
+    style ERRORS fill:#fff3e0
+```
 
 ## 🐳 題目二：數據應用服務
 
