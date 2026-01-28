@@ -1434,6 +1434,348 @@ Retry(
 | 驗證策略 | Transform 預驗證 | 單筆失敗不影響整批，錯誤可追溯 |
 | HTTP 下載 | Stream + Retry | 處理大檔案與網路不穩定 |
 
+
+### 4. 程式邏輯說明
+
+#### 程式碼結構
+
+```
+core/tax_registration/
+├── management/commands/
+│   └── load_tax_registration.py   # ETL 入口點（Management Command）
+├── etl/
+│   ├── extractor.py               # Extract：CSV 下載與分批讀取
+│   ├── transformer.py             # Transform：資料清洗與驗證
+│   ├── loader.py                  # Load：批次寫入資料庫
+│   └── tracker.py                 # 執行追蹤與斷點續傳
+├── models.py                      # 資料模型定義
+├── admin.py                       # Django Admin 設定
+└── tasks.py                       # Django-Q2 排程任務
+```
+
+#### 入口點：load_tax_registration Command
+
+`load_tax_registration` 是整個 ETL 的入口點，負責協調各元件的執行順序。
+
+**支援的參數**
+
+| 參數 | 說明 | 預設值 |
+|------|------|--------|
+| `--truncate` | 清空現有資料後重新匯入 | False |
+| `--resume` | 從上次中斷處繼續 | False |
+| `--dry-run` | 只執行 Extract/Transform，不寫入資料庫 | False |
+| `--limit N` | 限制處理筆數（測試用） | None（全部） |
+| `--batch-size N` | 資料庫寫入批次大小 | 5,000 |
+| `--chunk-size N` | CSV 讀取批次大小 | 50,000 |
+| `--auto` | 跳過確認提示（排程用） | False |
+
+**執行流程**
+
+```mermaid
+flowchart TB
+    START[開始執行] --> CHECK_RUNNING{檢查是否有<br/>正在執行的任務}
+    
+    CHECK_RUNNING -->|有| ABORT[終止執行<br/>避免重複執行]
+    CHECK_RUNNING -->|無| CHECK_ARGS{檢查參數}
+    
+    CHECK_ARGS -->|"--truncate"| CONFIRM[確認清空資料]
+    CHECK_ARGS -->|"--resume"| GET_PROGRESS[讀取上次進度]
+    CHECK_ARGS -->|一般執行| INIT
+    
+    CONFIRM --> TRUNCATE[清空 TaxRegistration<br/>與 BusinessIndustry]
+    TRUNCATE --> INIT
+    
+    GET_PROGRESS --> INIT[初始化 ETLTracker]
+    
+    INIT --> RUN_ETL[執行 _run_etl]
+    
+    RUN_ETL --> SUCCESS{執行結果}
+    
+    SUCCESS -->|成功| COMPLETE[tracker.complete<br/>更新狀態為 success]
+    SUCCESS -->|失敗| FAIL[tracker.fail<br/>記錄錯誤訊息]
+    
+    COMPLETE --> SUMMARY[印出統計摘要]
+    FAIL --> SUMMARY
+    
+    SUMMARY --> END[結束]
+```
+
+**防止重複執行機制**
+
+每次執行前會檢查是否有 `status='running'` 的 `ETLJobRun` 記錄。若有，代表上一次執行尚未完成（可能正在執行或異常中斷），此時會拒絕新的執行請求。這個設計避免了：
+
+- 兩個 ETL 同時寫入造成資料重複
+- 資料庫連線池耗盡
+- 記憶體不足
+
+---
+
+#### CSVExtractor：資料擷取
+
+負責從政府開放資料平台下載 CSV 檔案，並以 Generator 方式分批返回 DataFrame。
+
+**核心方法**
+
+| 方法 | 職責 |
+|------|------|
+| `fetch_chunks(chunk_size)` | 下載 CSV 並返回 DataFrame Generator |
+| `_create_session()` | 建立帶有重試機制的 HTTP Session |
+
+**處理流程**
+
+```mermaid
+flowchart LR
+    subgraph fetch_chunks
+        A[建立 HTTP Session] --> B[發送 GET 請求<br/>stream=True]
+        B --> C[pd.read_csv<br/>chunksize=50000]
+        C --> D[返回 Generator]
+    end
+    
+    subgraph _create_session
+        E[建立 Session] --> F[設定 Retry 策略]
+        F --> G[掛載 HTTPAdapter]
+    end
+    
+    fetch_chunks -.->|使用| _create_session
+```
+
+**關鍵設計**
+
+1. **串流下載**：使用 `stream=True` 避免一次將 304MB 載入記憶體
+2. **重試機制**：遇到 429/5xx 錯誤時自動重試，指數退避（1s → 2s → 4s）
+3. **統一編碼**：強制使用 UTF-8 編碼讀取
+4. **空值處理**：將空字串、NULL、null、NA、N/A 統一視為空值
+
+---
+
+#### TaxDataTransformer：資料轉換
+
+負責資料清洗與驗證，確保進入資料庫的資料符合 Schema 要求。
+
+**核心方法**
+
+| 方法 | 輸入 | 輸出 |
+|------|------|------|
+| `process(df, chunk_num)` | 原始 DataFrame | `(df_clean, errors)` 元組 |
+
+**驗證規則與處理順序**
+
+```mermaid
+flowchart TB
+    INPUT[輸入 DataFrame] --> STEP1
+    
+    subgraph STEP1["Step 1: 移除空白列"]
+        S1["dropna(how='all')"]
+        S1_DESC["移除所有欄位都是空值的列"]
+    end
+    
+    STEP1 --> STEP2
+    
+    subgraph STEP2["Step 2: 必填欄位檢查"]
+        S2["檢查欄位是否存在"]
+        S2_DESC["必填：統一編號、營業人名稱"]
+    end
+    
+    STEP2 --> STEP3
+    
+    subgraph STEP3["Step 3: 統一編號格式驗證"]
+        S3["長度 == 8 且全為數字"]
+        S3_ERR["不符合 → INVALID_BAN 錯誤"]
+    end
+    
+    STEP3 --> STEP4
+    
+    subgraph STEP4["Step 4: 批次內去重"]
+        S4["duplicated(subset='統一編號', keep='first')"]
+        S4_ERR["重複 → DUPLICATE 錯誤"]
+    end
+    
+    STEP4 --> OUTPUT
+    
+    OUTPUT["輸出<br/>(df_clean, errors)"]
+```
+
+**錯誤記錄格式**
+
+每筆驗證錯誤都會被記錄為一個 dict，包含：
+
+| 欄位 | 說明 | 範例 |
+|------|------|------|
+| `type` | 錯誤類型 | `INVALID_BAN` / `DUPLICATE` |
+| `batch` | 批次編號 | `5` |
+| `ban` | 統一編號 | `1234567` |
+| `message` | 錯誤訊息 | `統一編號格式錯誤: 1234567` |
+
+---
+
+#### BulkLoader：資料載入
+
+負責將清洗後的資料批次寫入 PostgreSQL，是效能最關鍵的元件。
+
+**核心方法**
+
+| 方法 | 職責 |
+|------|------|
+| `insert(df)` | 主要入口，協調寫入流程 |
+| `_prepare_tax_records(df)` | 準備主表資料 |
+| `_bulk_insert_copy(df)` | 使用 COPY 協定寫入主表 |
+| `_prepare_industry_records(df)` | 準備行業資料 |
+| `_bulk_insert_industries(records)` | 使用 bulk_create 寫入行業表 |
+
+**寫入流程**
+
+```mermaid
+flowchart TB
+    INPUT[輸入 df_clean] --> TXN_START["BEGIN TRANSACTION"]
+    
+    TXN_START --> PREP_TAX[準備主表資料<br/>_prepare_tax_records]
+    
+    PREP_TAX --> COPY[PostgreSQL COPY<br/>_bulk_insert_copy]
+    
+    COPY --> PREP_IND[準備行業資料<br/>_prepare_industry_records]
+    
+    PREP_IND --> BULK[Django bulk_create<br/>_bulk_insert_industries]
+    
+    BULK --> TXN_END["COMMIT"]
+    
+    TXN_END --> RETURN[返回成功筆數]
+    
+    subgraph Transaction["🔒 Transaction 範圍"]
+        PREP_TAX
+        COPY
+        PREP_IND
+        BULK
+    end
+```
+
+**COPY 協定寫入細節**
+
+`_bulk_insert_copy` 方法的處理步驟：
+
+1. **建立 StringIO Buffer**：在記憶體中建立一個類檔案物件
+2. **轉換 NULL 值**：將 Python 的 `None` 和空字串轉換為 PostgreSQL COPY 格式的 `\N`
+3. **寫入 TSV 格式**：使用 Tab 作為分隔符號，避免資料中的逗號造成問題
+4. **執行 COPY**：透過 `cursor.copy_from()` 直接寫入資料庫
+
+**行業資料處理**
+
+每筆營業登記最多有 4 個行業別（行業代號、行業代號1、行業代號2、行業代號3）。`_prepare_industry_records` 方法會：
+
+1. 遍歷每筆資料
+2. 檢查 4 個行業欄位是否有值
+3. 建立 `BusinessIndustry` 物件，設定 `order` 為 1-4
+4. 使用 `ignore_conflicts=True` 處理可能的重複
+
+---
+
+#### ETLTracker：執行追蹤
+
+貫穿整個 ETL 流程的追蹤元件，負責記錄執行狀態並支援斷點續傳。
+
+**核心方法**
+
+| 方法 | 職責 |
+|------|------|
+| `start()` | 建立 ETLJobRun 記錄，狀態設為 running |
+| `complete()` | 標記執行成功，更新統計數據 |
+| `fail(error)` | 標記執行失敗，記錄錯誤訊息 |
+| `record_errors(errors, chunk_num)` | 將驗證錯誤寫入 DataImportError |
+| `update_progress(chunk_num)` | 更新 ImportProgress，記錄最後成功批次 |
+| `get_resume_batch()` | 取得斷點續傳的起始批次號碼 |
+| `save_error_batch(df, chunk_num, error)` | 將失敗批次的原始資料匯出到 CSV |
+
+**狀態管理流程**
+
+```mermaid
+stateDiagram-v2
+    [*] --> Running: start()
+    
+    Running --> Success: complete()
+    Running --> Failed: fail(error)
+    Running --> Running: update_progress()
+    
+    Success --> [*]
+    Failed --> [*]
+    
+    note right of Running
+        每批次完成後呼叫
+        update_progress()
+        記錄 last_successful_batch
+    end note
+    
+    note right of Failed
+        記錄 error_message
+        保留 ImportProgress
+        供後續 resume 使用
+    end note
+```
+
+**統計數據追蹤**
+
+ETLTracker 內部維護一個 `stats` 字典，追蹤以下數據：
+
+| 欄位 | 說明 | 更新時機 |
+|------|------|----------|
+| `total` | 總處理筆數 | 每批次 Transform 後 |
+| `success` | 成功寫入筆數 | 每批次 Load 後 |
+| `failed` | 驗證失敗筆數 | 每批次 Transform 後 |
+| `duplicates` | 重複資料筆數 | 每批次 Transform 後 |
+
+**斷點續傳實作**
+
+`get_resume_batch()` 方法的邏輯：
+
+1. 查詢最近一筆 `status='running'` 的 ETLJobRun
+2. 取得該 Job 的 ImportProgress 記錄
+3. 返回 `last_successful_batch + 1` 作為續傳起點
+4. 若無記錄則返回 1（從頭開始）
+
+---
+
+#### 排程整合：Django-Q2 Tasks
+
+`tasks.py` 中定義了供 Django-Q2 排程呼叫的任務函數。
+
+**定義的任務**
+
+| 函數 | 說明 |
+|------|------|
+| `run_tax_import()` | 完整匯入（等同 `./run etl --auto`） |
+| `run_tax_import_dry_run()` | Dry Run 模式（測試用） |
+
+**與 Django-Q2 的整合方式**
+
+```mermaid
+flowchart LR
+    subgraph Django-Q2
+        SCHED[Scheduled Task<br/>每天凌晨 2 點]
+        WORKER[Q Cluster Worker]
+    end
+    
+    subgraph Tasks
+        FUNC["run_tax_import()"]
+        CMD["call_command(<br/>'load_tax_registration',<br/>truncate=True,<br/>auto=True)"]
+    end
+    
+    subgraph ETL
+        COMMAND[load_tax_registration]
+    end
+    
+    SCHED -->|觸發| WORKER
+    WORKER -->|執行| FUNC
+    FUNC -->|呼叫| CMD
+    CMD -->|執行| COMMAND
+```
+
+**為何使用 `call_command()` 而非直接呼叫函數？**
+
+| 方式 | 優點 | 缺點 |
+|------|------|------|
+| `call_command()` | 參數解析、輸出處理都由 Django 管理 | 多一層呼叫 |
+| 直接呼叫內部函數 | 稍快 | 需自行處理參數、stdout、錯誤 |
+
+選擇 `call_command()` 確保排程執行與手動執行的行為完全一致。
+
 ## 🐳 題目二：數據應用服務
 
 > 📝 待補充
