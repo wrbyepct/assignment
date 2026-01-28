@@ -98,11 +98,17 @@ tf-apply() {
 }
 
 tf-destroy() {
+    log_step "清理 AWS 資源"
+    
+    log_warn "即將銷毀所有 AWS 資源！"
     read -p "確定要繼續嗎？(yes/no): " confirm
+    
     if [ "$confirm" = "yes" ]; then
         docker compose -f terraform/tf.yml run --rm terraform destroy -auto-approve
+
+        log_info "✅ 清理完成"
     else
-        echo "[INFO] 操作已取消"
+        log_info "操作已取消"
     fi
 }
 
@@ -207,7 +213,7 @@ start_docker_compose() {
     
     # Build and start    
     log_info "Starting containers..."
-    ./run up
+    up
     
 }
 
@@ -234,18 +240,8 @@ show_completion_message() {
 }
 
 cleanup() {
-    log_step "清理 AWS 資源"
-    
-    log_warn "即將銷毀所有 AWS 資源！"
-    read -p "確定要繼續嗎？(yes/no): " confirm
-    
-    if [ "$confirm" = "yes" ]; then
-        docker compose down
-        docker compose -f terraform/tf.yml run --rm terraform destroy -auto-approve
-        log_info "✅ 清理完成"
-    else
-        log_info "操作已取消"
-    fi
+    down
+    tf-destroy
 }
 
 
