@@ -7,6 +7,8 @@ from contextlib import contextmanager
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connection
 from django.utils import timezone
+from datetime import timedelta
+
 
 from core.tax_registration.models import (
     TaxRegistration,
@@ -66,12 +68,15 @@ class Command(BaseCommand):
         self.auto = options["auto"]  # 存起來
 
         # 檢查是否有正在執行中的任務
+        HEARTBEAT_TIMEOUT = timedelta(minutes=5)  # 測試用只等待五分鐘
+
         ongoing_job = ETLJobRun.objects.filter(
-            status="running"
+            status="running", updated_at__gte=timezone.now() - HEARTBEAT_TIMEOUT
         ).exists()  # Already indexed, the query is fast
 
+        # TODO Add auto resume on scheduler
         if ongoing_job:
-            self.stdout.write(self.style.ERROR("已有任務正在執行中，請稍後再試。"))
+            self.stdout.write(self.style.ERROR("已有任務正在執行中，請5分鐘後再試。"))
             return  # 終止執行
 
         if options["truncate"] and options["resume"]:

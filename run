@@ -28,7 +28,7 @@ etl() {
 }
 
 resume() {
-    docker compose django python -m core.manage load_tax_registration --resume
+    docker compose exec django python -m core.manage load_tax_registration --resume
 }
 
 # ========== Django cocmmands ===========
@@ -229,7 +229,6 @@ show_completion_message() {
     echo "   ./run dry-run        # 測試 ETL（不實際寫入）"
     echo "   ./run etl            # 執行完整 ETL"
     echo "   ./run resume         # 執行任務斷點續傳"
-    echo "   ./run verify-logs    # 確認 CloudWatch 收到 log"
     echo ""
    
 }
