@@ -739,8 +739,307 @@ CommandError: 執行失敗: 測試失敗場景！
 
 ## 📊 題目一：數據資料收集
 
-> 📝 待補充
+### 1. 設計概念
 
+本系統採用經典的 **ETL（Extract-Transform-Load）三階段架構**，處理來自政府開放資料平台的全國營業稅籍登記資料。資料規模約 304MB、包含超過 160 萬筆營業登記記錄，屬於中大型資料集，無法一次載入記憶體處理。
+
+#### 核心設計原則
+
+| 原則 | 說明 | 實踐方式 |
+|------|------|----------|
+| **記憶體效率** | 避免一次載入整個 CSV 導致記憶體溢出（OOM） | 使用 pandas `chunksize` 參數分批讀取，每批次 50,000 筆 |
+| **失敗容錯** | 單一批次失敗不應導致整個 ETL 流程中斷 | 每批次獨立處理，錯誤記錄到資料庫，支援斷點續傳 |
+| **資料完整性** | 確保每批次資料要嘛全部寫入，要嘛全部回滾 | 使用 PostgreSQL Transaction 包裹每批次的寫入操作 |
+| **可追溯性** | 便於問題排查與執行歷史查詢 | 記錄每次 ETL 的執行狀態、處理筆數、錯誤明細於 `ETLJobRun` 表 |
+| **冪等性** | 重複執行不會產生重複資料 | 使用 `--truncate` 清空後重建，或 `--resume` 從斷點續傳 |
+
+#### 為何選擇 Django Management Command？
+
+本專案的 ETL 入口點是 Django Management Command（`load_tax_registration`），而非獨立的 Python 腳本。這個選擇基於以下考量：
+
+| 考量點 | Django Management Command | 獨立 Python Script |
+|--------|---------------------------|-------------------|
+| **ORM 整合** | ✅ 直接使用 Django Model，無需額外設定 | ❌ 需手動呼叫 `django.setup()` |
+| **設定管理** | ✅ 自動載入 `settings.py` 中的資料庫、Log 設定 | ❌ 需額外處理環境變數與設定檔 |
+| **資料庫連線** | ✅ 使用 Django 內建的連線池管理 | ❌ 需自行管理連線生命週期 |
+| **與排程整合** | ✅ Django-Q2 可透過 `call_command()` 直接呼叫 | ⚠️ 需額外包裝成可呼叫的函數 |
+| **參數解析** | ✅ 內建 `argparse` 整合，支援 `--help` | ❌ 需自行實作參數解析 |
+| **測試支援** | ✅ 可在測試中用 `call_command()` 驗證 | ❌ 需模擬 CLI 環境或 subprocess |
+
+
+#### 資料模型設計
+
+本系統的資料模型分為兩大類：**業務資料模型**（ETL 的目標資料）與 **ETL 追蹤模型**（記錄執行狀態與錯誤）。
+
+##### Model 關係總覽
+
+```mermaid
+erDiagram
+    %% ===== 業務資料模型 =====
+    TaxRegistration ||--o{ BusinessIndustry : "has many"
+    
+    TaxRegistration {
+        string ban PK "統一編號 (8碼)"
+        string headquarters_ban FK "總機構統一編號"
+        string business_name "營業人名稱"
+        string business_address "營業地址"
+        bigint capital_amount "資本額"
+        string business_setup_date "設立日期"
+        string business_type "組織別名稱"
+        boolean is_use_invoice "使用統一發票"
+        datetime created_at "建立時間"
+        datetime updated_at "更新時間"
+    }
+    
+    BusinessIndustry {
+        bigint id PK
+        string business_id FK "統一編號"
+        string industry_code "行業代號"
+        string industry_name "行業名稱"
+        int order "順序 (1-4)"
+    }
+
+    %% ===== ETL 追蹤模型 =====
+    ETLJobRun ||--o{ DataImportError : "has many"
+    ETLJobRun ||--|| ImportProgress : "has one"
+    
+    ETLJobRun {
+        bigint id PK
+        datetime started_at "開始時間"
+        datetime completed_at "完成時間"
+        string status "狀態"
+        int records_total "總筆數"
+        int records_processed "成功筆數"
+        int records_failed "失敗筆數"
+        int records_duplicated "重複筆數"
+        text error_message "錯誤訊息"
+        int batch_size "批次大小"
+        int chunk_size "Chunk 大小"
+        string data_source_url "資料來源"
+    }
+    
+    DataImportError {
+        bigint id PK
+        bigint job_run_id FK
+        int batch_number "批次編號"
+        string error_type "錯誤類型"
+        text error_message "錯誤訊息"
+        json raw_data "原始資料"
+        datetime created_at "建立時間"
+    }
+    
+    ImportProgress {
+        bigint id PK
+        bigint job_run_id FK "OneToOne"
+        int last_successful_batch "最後成功批次"
+        int total_batches "總批次數"
+        int current_batch "當前批次"
+        datetime updated_at "更新時間"
+    }
+```
+
+##### 業務資料模型設計
+
+**TaxRegistration（營業登記主表）**
+
+| 設計決策 | 說明 |
+|----------|------|
+| **使用統一編號作為 Primary Key** | 統一編號在台灣具有唯一性，直接作為 PK 可避免額外的 auto-increment ID，查詢時也不需要 JOIN |
+| **BigIntegerField 儲存資本額** | 部分企業資本額超過 21 億（Integer 上限），使用 BigInteger 避免溢位 |
+| **設立日期使用 CharField** | 原始資料格式為 `YYYYMMDD` 字串，部分資料有格式問題，保留原始格式便於追溯 |
+| **建立時間使用 db_default=Now()** | PostgreSQL COPY 會跳過 Django ORM，需要資料庫層級的預設值 |
+
+**BusinessIndustry（營業項目）**
+
+| 設計決策 | 說明 |
+|----------|------|
+| **獨立成表而非 JSON 欄位** | 便於查詢「所有從事某行業的公司」，支援索引優化 |
+| **複合唯一約束** | `(business, industry_code)` 確保同一公司不會有重複的行業代號 |
+| **order 欄位** | 記錄行業的優先順序（主要行業為 1，次要為 2-4） |
+| **使用 ForeignKey 而非嵌入** | 一家公司最多 4 個行業，關聯查詢成本可接受，且便於獨立維護 |
+
+##### ETL 追蹤模型設計
+
+**ETLJobRun（執行紀錄）**
+
+這是 ETL 追蹤的核心表，每次執行 `load_tax_registration` 都會建立一筆記錄。
+
+| 欄位 | 用途 |
+|------|------|
+| `status` | 追蹤執行狀態：`running` → `success` / `failed` / `partial` |
+| `records_*` | 統計數據：總筆數、成功、失敗、重複，用於執行報告 |
+| `batch_size` / `chunk_size` | 記錄執行參數，便於效能分析與問題重現 |
+| `data_source_url` | 記錄資料來源，支援多資料源場景 |
+| `error_message` | 失敗時記錄錯誤訊息，便於快速診斷 |
+
+**DataImportError（錯誤明細）**
+
+記錄每一筆驗證失敗的資料，支援問題資料的追溯與修正。
+
+| 欄位 | 用途 |
+|------|------|
+| `batch_number` | 記錄錯誤發生在哪個批次，便於定位問題 |
+| `error_type` | 分類錯誤類型：`INVALID_BAN`（格式錯誤）、`DUPLICATE`（重複資料） |
+| `raw_data` | 以 JSON 格式保存原始資料，便於人工檢視與修正 |
+
+設計考量：每批次最多記錄 100 筆錯誤，避免異常資料導致錯誤表爆量。
+
+**ImportProgress（斷點續傳）**
+
+與 `ETLJobRun` 是 OneToOne 關係，專門追蹤處理進度。
+
+| 欄位 | 用途 |
+|------|------|
+| `last_successful_batch` | 最後成功完成的批次編號，斷點續傳的依據 |
+| `current_batch` | 當前正在處理的批次，用於即時監控 |
+| `total_batches` | 預估總批次數（若可預先得知） |
+
+分離成獨立表的原因：進度資訊更新頻繁（每批次一次），與 `ETLJobRun` 的其他欄位更新頻率不同，分離可減少 row lock 競爭。
+
+##### 索引設計
+
+```mermaid
+graph LR
+    subgraph TaxRegistration
+        A[ban - PK] 
+        B[headquarters_ban - Index]
+        C[business_name - Index]
+        D[capital_amount - Index]
+        E[business_type - Index]
+        F[created_at - Index]
+    end
+    
+    subgraph BusinessIndustry
+        G[industry_code - Index]
+        H["(industry_code, business) - Composite"]
+        I["(business, industry_code) - Unique"]
+    end
+    
+    subgraph ETL追蹤
+        J[status - Index]
+        K[started_at - Index]
+        L["(error_type, created_at) - Composite"]
+    end
+```
+
+| 表 | 索引 | 查詢場景 |
+|-----|------|----------|
+| `TaxRegistration` | `headquarters_ban` | 查詢某總機構下的所有分公司 |
+| `TaxRegistration` | `business_name` | 模糊搜尋公司名稱 |
+| `TaxRegistration` | `capital_amount` | 依資本額範圍篩選 |
+| `TaxRegistration` | `created_at` | 查詢某時間後新增的資料 |
+| `BusinessIndustry` | `(industry_code, business)` | 查詢某行業的所有公司（覆蓋索引） |
+| `DataImportError` | `(error_type, created_at)` | 查詢某類型的最近錯誤 |
+
+
+#### ETL Pipeline 整體流程
+
+整個 ETL 流程由 `load_tax_registration` command 作為入口點，協調四個核心元件依序執行：
+
+```
+使用者執行 ./run etl
+        │
+        ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                    load_tax_registration                         │
+│                     (ETL 主控制器)                                │
+│                                                                  │
+│  1. 解析參數（--truncate / --resume / --dry-run / --limit）       │
+│  2. 檢查是否有正在執行的任務（防止重複執行）                         │
+│  3. 初始化 ETLTracker 建立執行記錄                                │
+│  4. 依序呼叫 Extract → Transform → Load                          │
+│  5. 更新執行狀態（success / failed）                              │
+└──────────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│   Extract   │ ──▶ │  Transform  │ ──▶ │    Load     │
+│ CSVExtractor│     │TaxData      │     │ BulkLoader  │
+│             │     │Transformer  │     │             │
+└─────────────┘     └─────────────┘     └─────────────┘
+        │                   │                   │
+        ▼                   ▼                   ▼
+  從政府網站下載       驗證、清洗、去重      PostgreSQL COPY
+  CSV 並分批讀取       每批次獨立處理        批次寫入資料庫
+        │                   │                   │
+        └───────────────────┴───────────────────┘
+                            │
+                            ▼
+                    ┌─────────────┐
+                    │ ETLTracker  │
+                    │  (執行追蹤)  │
+                    └─────────────┘
+                            │
+                            ▼
+                  記錄進度、錯誤、統計數據
+                  支援斷點續傳與錯誤分析
+```
+
+#### 各元件職責說明
+
+**1. CSVExtractor（Extract 階段）**
+
+負責從遠端 URL 下載 CSV 檔案，並以 Generator 方式分批返回 DataFrame。這個設計確保即使 CSV 檔案有 300MB，記憶體中同一時間也只會存在一個批次的資料（約 50,000 筆）。
+
+主要職責：
+- 建立帶有重試機制的 HTTP Session（遇到 429、500、502、503、504 會自動重試 3 次）
+- 使用 `stream=True` 串流下載，避免一次載入整個回應到記憶體
+- 透過 pandas `read_csv()` 的 `chunksize` 參數，以 Generator 形式逐批產出 DataFrame
+- 統一處理編碼（UTF-8）與空值識別（空字串、NULL、null、NA、N/A）
+
+**2. TaxDataTransformer（Transform 階段）**
+
+負責資料清洗與驗證，確保進入資料庫的資料符合 Schema 要求。每個批次獨立處理，返回清洗後的 DataFrame 與錯誤清單。
+
+主要職責：
+- 移除完全空白的資料列
+- 驗證必填欄位存在（統一編號、營業人名稱）
+- 驗證統一編號格式（必須為 8 位數字）
+- 處理批次內重複資料（保留第一筆，其餘標記為 DUPLICATE 錯誤）
+- 清理字串前後空白
+- 返回 `(df_clean, errors)` 元組，讓呼叫端決定如何處理錯誤
+
+**3. BulkLoader（Load 階段）**
+
+負責將清洗後的資料批次寫入 PostgreSQL。這是效能最關鍵的元件，直接決定整體 ETL 的執行時間。
+
+主要職責：
+- 使用 PostgreSQL `COPY` 協定進行批次寫入（比 Django ORM 的 `bulk_create` 快 10-100 倍）
+- 在 Transaction 中同時處理主表（`TaxRegistration`）與關聯表（`BusinessIndustry`）
+- 處理 NULL 值的特殊格式（`\N`）以符合 COPY 協定要求
+- 行業資料使用 `bulk_create` 搭配 `ignore_conflicts=True`，處理重複資料
+
+**4. ETLTracker（執行追蹤）**
+
+貫穿整個 ETL 流程的追蹤元件，負責記錄執行狀態與統計數據，並支援斷點續傳功能。
+
+主要職責：
+- 建立 `ETLJobRun` 記錄，追蹤執行狀態（running → success/failed）
+- 維護即時統計數據（總處理筆數、成功筆數、失敗筆數、重複筆數）
+- 記錄每批次的錯誤明細到 `DataImportError` 表
+- 更新 `ImportProgress` 記錄最後成功的批次號碼
+- 提供 `get_resume_batch()` 方法，支援從上次中斷處繼續
+- 失敗批次的原始資料匯出到 CSV 檔案，便於人工檢視
+
+#### 執行模式說明
+
+| 模式 | 指令 | 說明 |
+|------|------|------|
+| **完整匯入** | `./run etl` | 清空現有資料，重新匯入全部記錄 |
+| **Dry Run** | `./run dry-run` | 只執行 Extract 與 Transform，不實際寫入資料庫，用於驗證資料品質 |
+| **斷點續傳** | `./run resume` | 從上次失敗的批次繼續執行，避免重新處理已完成的批次 |
+| **限制筆數** | `./run etl --limit 10000` | 只處理前 N 筆，用於開發測試 |
+
+#### 錯誤處理策略
+
+系統採用「記錄並繼續」的錯誤處理策略，而非「遇錯即停」：
+
+1. **單筆資料錯誤**：記錄到 `DataImportError` 表，該批次其餘資料繼續處理
+2. **整批次失敗**：記錄錯誤、匯出原始資料到 CSV、詢問是否繼續處理下一批次
+3. **網路錯誤**：HTTP 請求內建重試機制，3 次失敗後才拋出例外
+4. **資料庫錯誤**：Transaction 回滾確保資料一致性，記錄失敗狀態後終止
+
+這種設計確保 160 萬筆資料中即使有少量問題資料，也不會阻擋整體 ETL 流程的完成。
 ---
 
 ## 🐳 題目二：數據應用服務

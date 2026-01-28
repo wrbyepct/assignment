@@ -32,6 +32,7 @@ class TaxDataTransformer:
         invalid_mask = (df["統一編號"].str.len() != 8) | (~df["統一編號"].str.isdigit())
 
         # 記錄格式錯誤
+        # TODO find out which rows have the error later
         for _, row in df[invalid_mask].iterrows():
             errors.append(
                 {
