@@ -139,6 +139,7 @@ class ETLJobRun(models.Model):
     ]
 
     started_at = models.DateTimeField("開始時間", auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField("更新時間", auto_now_add=True, db_index=True)
 
     completed_at = models.DateTimeField("完成時間", null=True, blank=True)
 
