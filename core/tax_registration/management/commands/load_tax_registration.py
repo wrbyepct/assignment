@@ -98,7 +98,6 @@ class Command(BaseCommand):
         self.tracker.start()
 
         try:
-            raise Exception("Test for fail...!")
             self.handle_successful_etl_job()
         except Exception as e:
             self.handle_failed_etl_job(e)
