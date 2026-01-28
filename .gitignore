@@ -30,7 +30,7 @@ db.sqlite3
 .env
 .venv
 .env.local
-
+credentials
 errors/
 *.csv
 

@@ -14,6 +14,8 @@ pandas = "^3.0.0"
 django-environ = "^0.12.0"
 python-json-logger = "^4.0.0"
 django-q2 = "^1.9.0"
+watchtower = "^3.4.0"
+boto3 = "^1.42.35"
 
 
 [tool.poetry.group.dev.dependencies]
