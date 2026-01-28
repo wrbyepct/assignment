@@ -751,8 +751,197 @@ CommandError: 執行失敗: 測試失敗場景！
 
 ## 🏗️ 題目三：Docker Log 蒐集 - IaC
 
-> 📝 待補充
+### 1. 設計概念
 
+本專案使用 **Terraform** 實現基礎設施即代碼（Infrastructure as Code），自動化部署所有 AWS 監控資源。
+
+**核心設計原則：**
+
+| 原則 | 實踐方式 |
+|------|----------|
+| **最小權限原則** | IAM Policy 僅授予 `logs:PutLogEvents` 等必要權限，並限定特定 Log Group |
+| **資源命名規範** | 統一使用 `${project_name}-${resource}` 格式，便於識別與管理 |
+| **環境變數分離** | 敏感資訊（Email、憑證）透過 `TF_VAR_*` 注入，不寫死在程式碼中 |
+| **模組化設計** | 依資源類型分離 `.tf` 檔案，提高可讀性與維護性 |
+
+---
+
+### 2. 架構圖
+
+```mermaid
+flowchart TB
+    subgraph Terraform["🏗️ Terraform 管理的資源"]
+        subgraph IAM["IAM"]
+            USER[IAM User<br/>log-writer]
+            POLICY[IAM Policy<br/>CloudWatch Logs Write]
+            KEY[Access Key]
+            
+            USER --> POLICY
+            USER --> KEY
+        end
+        
+        subgraph CloudWatch["CloudWatch"]
+            LG[Log Group<br/>/docker/etl]
+            
+            subgraph Streams["Log Streams"]
+                S1[console]
+                S2[file]
+            end
+            
+            subgraph Metrics["Metric Filters"]
+                MF1[ErrorCount]
+                MF2[ETLCompleted]
+                MF3[ETLFailed]
+                MF4[RecordsProcessed]
+            end
+            
+            subgraph Alarms["Alarms"]
+                A1[High Error Count]
+                A2[ETL Failed]
+            end
+            
+            DB[Dashboard]
+            
+            LG --> S1
+            LG --> S2
+            LG --> MF1
+            LG --> MF2
+            LG --> MF3
+            LG --> MF4
+            MF1 --> A1
+            MF3 --> A2
+            MF1 & MF2 & MF3 & MF4 --> DB
+            A1 & A2 --> DB
+        end
+        
+        subgraph SNS["SNS"]
+            TOPIC[Topic<br/>etl-alerts]
+            SUB[Email Subscription]
+            
+            TOPIC --> SUB
+        end
+        
+        A1 --> TOPIC
+        A2 --> TOPIC
+    end
+    
+    SUB -->|"告警通知"| EMAIL[👤 Admin Email]
+    KEY -->|"憑證供應"| DOCKER[🐳 Docker Containers]
+    DOCKER -->|"寫入日誌"| LG
+
+    style USER fill:#ff9800,color:#000
+    style LG fill:#9c27b0,color:#fff
+    style TOPIC fill:#e91e63,color:#fff
+```
+
+---
+
+### 3. IAM 設計
+
+本專案涉及兩個 IAM User，各有不同用途與權限範圍：
+
+#### IAM User 總覽
+
+| User | 建立方式 | 用途 | 生命週期 |
+|------|----------|------|----------|
+| `terraform-deployer` | 手動建立 | 執行 Terraform 部署 AWS 資源 | 長期保留 |
+| `etl-log-demo-log-writer` | Terraform 建立 | Docker containers 寫入 CloudWatch Logs | 隨 Terraform 管理 |
+
+#### 1. terraform-deployer（部署用）
+
+**用途**：執行 `terraform apply` 建立/修改/刪除 AWS 資源
+
+**附加的 AWS Managed Policies：**
+
+| Policy | 理由 |
+|--------|------|
+| `CloudWatchFullAccess` | 建立 Log Group、Metric Filter、Alarm、Dashboard |
+| `IAMFullAccess` | 建立 `log-writer` User 及其 Policy、Access Key |
+| `AmazonSNSFullAccess` | 建立 SNS Topic 與 Email Subscription |
+
+**為什麼使用 Managed Policies？**
+- 部署階段需要較廣泛的權限來建立各類資源
+- Managed Policies 由 AWS 維護，自動涵蓋服務新增的 API
+- 部署完成後此 User 不再使用，風險可控
+
+#### 2. etl-log-demo-log-writer（運行時用）
+
+**用途**：供 Watchtower 與 CloudWatch Agent 寫入日誌
+
+**附加的 Custom Policy（最小權限設計）：**
+
+```
+Policy: etl-log-demo-cloudwatch-logs-write
+
+Actions:
+  - logs:CreateLogGroup
+  - logs:CreateLogStream
+  - logs:PutLogEvents
+  - logs:DescribeLogGroups
+  - logs:DescribeLogStreams
+
+Resources:
+  - arn:aws:logs:ap-northeast-1:*:log-group:/docker/etl
+  - arn:aws:logs:ap-northeast-1:*:log-group:/docker/etl:*
+```
+
+**為什麼使用 Custom Policy？**
+
+| 設計決策 | 理由 |
+|----------|------|
+| **限定特定 Log Group** | 即使憑證外洩，攻擊者也無法存取其他 Log Group |
+| **僅授予寫入權限** | 無法讀取、刪除日誌，降低資料外洩風險 |
+| **包含 Describe 權限** | CloudWatch Agent 啟動時需要檢查 Log Group/Stream 是否存在 |
+
+#### 為什麼選擇 IAM User 而非 IAM Role？
+
+| 考量 | IAM User | IAM Role |
+|------|----------|----------|
+| **適用環境** | 本地 Docker Compose | AWS 服務（ECS/EC2/Lambda） |
+| **憑證形式** | Access Key（長期） | 臨時憑證（自動輪替） |
+| **本專案情境** | ✅ 本地開發為主 | ❌ 需部署至 AWS 才能使用 |
+
+**結論**：本專案以本地 Docker Compose 執行為主要場景，IAM User + Access Key 是最直接的方案。若未來部署至 ECS，建議改用 Task IAM Role 以獲得自動憑證輪替的安全性。
+
+---
+
+### 4. Terraform 資源說明
+
+#### 檔案結構
+
+```
+terraform/
+├── main.tf                      # Provider 設定、後端配置
+├── variables.tf                 # 輸入變數定義
+├── outputs.tf                   # 輸出值（供 setup script 使用）
+├── iam_user.tf                  # IAM User 與 Access Key
+├── iam_policies.tf              # IAM Policy（最小權限）
+├── cloudwatch_log_groups.tf     # Log Group 與 Streams
+├── cloudwatch_metric_filters.tf # Metric Filters（從 log 提取指標）
+├── cloudwatch_alarms.tf         # 告警規則
+├── cloudwatch_dashboard.tf      # 可視化 Dashboard
+├── sns.tf                       # SNS Topic 與 Email 訂閱
+└── .env.aws                     # AWS 憑證範本（不納入版控）
+```
+
+#### 關鍵資源說明
+
+| 資源 | 檔案 | 用途 |
+|------|------|------|
+| `aws_iam_user.log_writer` | `iam_user.tf` | 供 Docker containers 使用的寫入專用帳戶 |
+| `aws_iam_policy.cloudwatch_logs_write` | `iam_policies.tf` | 限定只能寫入 `/docker/etl` Log Group |
+| `aws_cloudwatch_log_metric_filter` | `cloudwatch_metric_filters.tf` | 從 JSON log 提取 `ErrorCount`、`ETLCompleted`、`ETLFailed`、`RecordsProcessed` 指標 |
+| `aws_cloudwatch_metric_alarm` | `cloudwatch_alarms.tf` | 5 分鐘內 ≥5 ERROR 或 ETL 失敗時觸發告警 |
+| `aws_sns_topic_subscription` | `sns.tf` | 告警觸發時發送 Email 通知 |
+
+#### 變數設計
+
+| 變數 | 預設值 | 說明 |
+|------|--------|------|
+| `project_name` | `etl-log-demo` | 資源命名前綴 |
+| `aws_region` | `ap-northeast-1` | AWS 區域 |
+| `log_retention_days` | `3` | Log 保留天數（Demo 用，生產建議 30-90） |
+| `alarm_email` | （選填） | 告警通知信箱 |
 ---
 
 ## 📝 題目四：Docker Log 蒐集 - Log Implement
