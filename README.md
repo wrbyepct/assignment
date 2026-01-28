@@ -1263,6 +1263,177 @@ flowchart LR
     style ERRORS fill:#fff3e0
 ```
 
+### 3. 技術選型理由
+
+#### 資料庫選擇：PostgreSQL
+
+**選擇 PostgreSQL 的關鍵理由**：`COPY` 協定提供比 `INSERT` 快 10-100 倍的批次寫入效能，對於 160 萬筆資料的場景至關重要。
+
+#### 批次寫入策略：PostgreSQL COPY vs Django ORM
+
+```mermaid
+flowchart LR
+    subgraph 方案比較
+        A["Django ORM<br/>bulk_create()"]
+        B["Raw SQL<br/>INSERT...VALUES"]
+        C["PostgreSQL<br/>COPY"]
+    end
+
+    subgraph 效能指標
+        A -->|"~3,000 筆/秒"| PA["⭐⭐"]
+        B -->|"~8,000 筆/秒"| PB["⭐⭐⭐"]
+        C -->|"~50,000 筆/秒"| PC["⭐⭐⭐⭐⭐"]
+    end
+
+    style C fill:#c8e6c9
+    style PC fill:#c8e6c9
+```
+
+| 方案 | 寫入速度 | 優點 | 缺點 |
+|------|----------|------|------|
+| **Django bulk_create** | ~3,000 筆/秒 | 使用 ORM，支援 `auto_now_add` | 會產生大量 INSERT 語句 |
+| **Raw SQL INSERT** | ~8,000 筆/秒 | 可批次 INSERT 多筆 | 需手動處理 SQL 注入防護 |
+| **PostgreSQL COPY** | ~50,000 筆/秒 | 最快，直接寫入 WAL | 跳過 ORM，需手動處理預設值 |
+
+**本專案選擇**：主表（`TaxRegistration`）使用 `COPY`，關聯表（`BusinessIndustry`）使用 `bulk_create`。
+
+原因：
+- 主表資料量大（160 萬筆），效能優先
+- 關聯表資料量較小，且需要處理 `ignore_conflicts=True`，ORM 較方便
+
+**COPY 的限制與解決方案**：
+
+| 限制 | 說明 | 解決方案 |
+|------|------|----------|
+| 跳過 `auto_now_add` | COPY 不經過 Django ORM | 使用 `db_default=Now()` 讓資料庫自動填入 |
+| 無法使用 Model Validation | 資料不經過 `full_clean()` | 在 Transform 階段預先驗證 |
+| NULL 值格式特殊 | 需使用 `\N` 表示 NULL | 在 `BulkLoader` 中轉換格式 |
+
+#### 資料讀取策略：pandas Chunked Reading
+
+```mermaid
+flowchart TB
+    subgraph 問題["❌ 問題：304MB CSV 無法一次載入"]
+        A["pd.read_csv('huge.csv')"]
+        B["記憶體爆炸 💥<br/>MemoryError"]
+        A --> B
+    end
+
+    subgraph 解法["✅ 解法：分批讀取"]
+        C["pd.read_csv(..., chunksize=50000)"]
+        D["返回 Generator"]
+        E["每次只載入 50,000 筆"]
+        C --> D --> E
+    end
+
+    問題 -.->|"改用"| 解法
+
+    style B fill:#ffcdd2
+    style E fill:#c8e6c9
+```
+
+**選擇 pandas 的理由**：
+- 160 萬筆屬於中型資料集，單機 + 分批即可處理
+- DataFrame API 便於資料清洗（`dropna`、`duplicated`、`str.strip` 等）
+- 團隊熟悉度高，維護成本低
+- 不需要額外的分散式環境（Spark/Dask）
+
+**Chunk Size 的選擇（50,000）**：
+
+| Chunk Size | 記憶體使用 | 批次數量 | 適用場景 |
+|------------|------------|----------|----------|
+| 10,000 | ~50MB | ~160 批 | 記憶體受限環境 |
+| **50,000** | ~250MB | ~32 批 | **平衡點（本專案選擇）** |
+| 100,000 | ~500MB | ~16 批 | 記憶體充足環境 |
+
+選擇 50,000 的考量：
+- 記憶體用量適中（約 250MB/批）
+- 批次數量合理（3X 批），進度更新不會太頻繁
+- 單批處理時間約 2-3 秒，失敗時損失可接受
+
+#### 資料驗證策略：Transform 階段預驗證
+
+```mermaid
+flowchart LR
+    subgraph 策略A["❌ 策略 A：依賴資料庫約束"]
+        A1[直接寫入] --> A2[資料庫報錯]
+        A2 --> A3[整批 Rollback]
+        A3 --> A4["一筆錯，全批失敗"]
+    end
+
+    subgraph 策略B["✅ 策略 B：預先驗證"]
+        B1[Transform 驗證] --> B2{通過?}
+        B2 -->|Yes| B3[寫入資料庫]
+        B2 -->|No| B4[記錄錯誤]
+        B4 --> B5[繼續處理其他資料]
+    end
+
+    style A4 fill:#ffcdd2
+    style B5 fill:#c8e6c9
+```
+
+**選擇預驗證的理由**：
+
+| 面向 | 依賴資料庫約束 | 預先驗證（本專案） |
+|------|----------------|-------------------|
+| **錯誤粒度** | 整批失敗 | 單筆失敗，其餘繼續 |
+| **錯誤訊息** | 資料庫錯誤，較難讀 | 自訂訊息，清楚標示問題 |
+| **效能** | 寫入後才發現錯誤 | 早期發現，減少無效 I/O |
+| **可追溯性** | 需額外記錄 | 驗證時直接記錄到 `DataImportError` |
+
+#### HTTP 下載策略：Stream + Retry
+
+```mermaid
+flowchart TB
+    subgraph 下載策略
+        STREAM["stream=True<br/>串流下載"]
+        RETRY["Retry 機制<br/>自動重試 3 次"]
+        TIMEOUT["Timeout 設定<br/>60 秒"]
+    end
+
+    subgraph 處理的問題
+        P1["304MB 一次下載<br/>可能 timeout"]
+        P2["網路不穩定<br/>偶發失敗"]
+        P3["伺服器限流<br/>429 Too Many Requests"]
+    end
+
+    STREAM -.->|解決| P1
+    RETRY -.->|解決| P2
+    RETRY -.->|解決| P3
+
+    style STREAM fill:#e3f2fd
+    style RETRY fill:#e3f2fd
+    style TIMEOUT fill:#e3f2fd
+```
+
+**Retry 設定說明**：
+
+```
+Retry(
+    total=3,                    # 最多重試 3 次
+    backoff_factor=1,           # 重試間隔：1s, 2s, 4s（指數退避）
+    status_forcelist=[          # 遇到這些狀態碼才重試
+        429,  # Too Many Requests
+        500,  # Internal Server Error
+        502,  # Bad Gateway
+        503,  # Service Unavailable
+        504   # Gateway Timeout
+    ]
+)
+```
+
+#### 技術選型總結
+
+| 決策點 | 選擇 | 關鍵理由 |
+|--------|------|----------|
+| 資料庫 | PostgreSQL | COPY 協定提供最佳批次寫入效能 |
+| 主表寫入 | PostgreSQL COPY | 160 萬筆資料，效能優先 |
+| 關聯表寫入 | Django bulk_create | 資料量小，需要 `ignore_conflicts` |
+| 資料讀取 | pandas + chunksize | DataFrame API 便於清洗，分批控制記憶體 |
+| Chunk Size | 50,000 | 平衡記憶體用量與批次數量 |
+| 驗證策略 | Transform 預驗證 | 單筆失敗不影響整批，錯誤可追溯 |
+| HTTP 下載 | Stream + Retry | 處理大檔案與網路不穩定 |
+
 ## 🐳 題目二：數據應用服務
 
 > 📝 待補充
