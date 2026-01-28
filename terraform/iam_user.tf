@@ -4,7 +4,7 @@ resource "aws_iam_user" "log_writer" {
   name = "${var.project_name}-log-writer"
 
   tags = {
-    Purpose = "Docker log collection (awslogs + CloudWatch Agent)"
+    Purpose = "Docker log collection awslogs and CloudWatch Agent"
   }
 }
 

@@ -4,6 +4,7 @@ Django settings for de project.
 
 import environ
 from pathlib import Path
+import boto3
 
 # ==================== 初始化 environ ====================
 env = environ.Env(
@@ -119,6 +120,15 @@ Q_CLUSTER = {
 }
 
 # ==================== Logging ====================
+
+
+boto3_logs_client = boto3.client(
+    "logs",
+    aws_access_key_id=env("AWS_ACCESS_KEY_ID"),
+    aws_secret_access_key=env("AWS_SECRET_ACCESS_KEY"),
+    region_name=env("AWS_DEFAULT_REGION", default="ap-northeast-1"),
+)
+
 LOG_LEVEL = env("LOG_LEVEL", default="INFO")
 
 LOGGING = {
@@ -140,6 +150,13 @@ LOGGING = {
     },
     # ===== Handlers =====
     "handlers": {
+        "watchtower": {
+            "level": "INFO",
+            "class": "watchtower.CloudWatchLogHandler",
+            "boto3_client": boto3_logs_client,
+            "log_group": env("CLOUDWATCH_LOG_GROUP", default="/docker/etl"),
+            "stream_name": "console",
+        },
         "console": {
             "class": "logging.StreamHandler",
             "formatter": "json",
@@ -160,7 +177,7 @@ LOGGING = {
     # ===== Loggers =====
     "loggers": {
         "tax_registration": {
-            "handlers": ["console", "file"],
+            "handlers": ["console", "file", "watchtower"],
             "level": LOG_LEVEL,
             "propagate": False,  # Don't send to root to duplicate logs
         },

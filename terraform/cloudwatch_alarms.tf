@@ -14,7 +14,7 @@ resource "aws_cloudwatch_metric_alarm" "high_error_count" {
   namespace           = "${var.project_name}/ETL"
   period              = 300 # 5 分鐘 (300 秒)
   statistic           = "Sum"
-  threshold           = 5              # >= 5 個 ERROR
+  threshold           = 1              # >= 1 個 ERROR (測試用)
   treat_missing_data  = "notBreaching" # 沒資料時不觸發
 
   # 觸發時通知 SNS

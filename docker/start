@@ -27,7 +27,7 @@ wait_for_db() {
     local attempt=1
     
     while [ $attempt -le $max_attempts ]; do
-        if python -m core.manage check --database default > /dev/null 2>&1; then
+        if python -m core.manage check --database default; then
             log_info "資料庫連線成功！"
             return 0
         fi
