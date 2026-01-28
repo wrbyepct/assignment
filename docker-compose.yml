@@ -89,27 +89,6 @@ services:
       - django_logs:/var/log/django:ro
     restart: unless-stopped
 
-  # ==================== ETL 執行器（一次性任務）====================
-  etl-runner:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile
-    container_name: etl-runner
-    depends_on:
-      postgres:
-        condition: service_healthy
-    env_file:
-      - .env.local
-    volumes:
-      - ./core:/app/core:ro
-      - ./errors:/app/errors  # 錯誤檔案輸出
-      - django_logs:/var/log/django
-
-
-    # 覆寫 CMD 執行 ETL
-    command: python -m core.manage load_tax_registration --truncate
-    profiles:
-      - etl  # 只有指定 profile 才會啟動
 
 volumes:
   postgres_data:
