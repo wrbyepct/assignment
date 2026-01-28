@@ -127,34 +127,54 @@ git --version
 
 > ⚠️ **注意**：安裝完 Docker Desktop 後，請確保已啟動應用程式。
 
-### Windows 安裝
+### Windows 安裝（使用 WSL）
 
+本專案建議 Windows 使用者透過 WSL (Windows Subsystem for Linux) 運行，可獲得與 Linux 一致的開發體驗。
+
+#### 步驟一：安裝 WSL
 ```powershell
-# 使用 winget 安裝（Windows 11 內建，Windows 10 需另行安裝）
+# 以系統管理員身分開啟 PowerShell，執行：
+wsl --install
 
-# 安裝 Docker Desktop
-winget install Docker.DockerDesktop
+# 安裝完成後重新啟動電腦
+```
 
-# 安裝 AWS CLI
-winget install Amazon.AWSCLI
+> 💡 預設會安裝 Ubuntu，重啟後會自動開啟設定使用者名稱和密碼。
+
+#### 步驟二：安裝 Docker Desktop 並啟用 WSL 整合
+
+1. 下載並安裝 [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+2. 安裝時勾選 **Use WSL 2 instead of Hyper-V**
+3. 安裝完成後，重新啟動
+4. 首次啟動 Docker Desktop 需同意服務條款
+
+#### 步驟三：在 WSL 中安裝相依套件
+```bash
+# 開啟 WSL 終端機（在開始選單搜尋 "Ubuntu" 或Command Prompt 執行 `wsl`）
+
+# 更新套件列表
+sudo apt update && sudo apt upgrade -y
 
 # 安裝 Git
-winget install Git.Git
+sudo apt install -y git
 
-# （可選）安裝 Poetry
-winget install Python.Poetry
+# 安裝 AWS CLI
+sudo snap install aws-cli --classic
 
-# 驗證安裝（重新開啟 PowerShell）
-docker --version
+
+# 驗證安裝
+docker --version          # 應顯示 Docker Desktop 版本
 docker compose version
 aws --version
 git --version
 ```
 
 > ⚠️ **注意**：
-> 1. Docker Desktop 需要啟用 WSL 2，安裝時會自動提示
-> 2. 安裝完成後需重新啟動電腦
-> 3. 首次啟動 Docker Desktop 需同意服務條款
+> 1. 所有後續操作請在 **WSL 終端機** 中執行，而非 PowerShell 或 CMD
+> 2. 專案資料夾建議放在 WSL 檔案系統內（如 `~/projects/`），而非 Windows 路徑（如 `/mnt/c/`），以獲得更好的效能
+> 3. 若 `docker` 命令無法執行，請確認 Docker Desktop 已啟動且 WSL Integration 已啟用
+```
+
 
 ### Linux (Ubuntu/Debian) 安裝
 
@@ -234,8 +254,8 @@ aws iam create-access-key --user-name terraform-deployer
 ### Step 1：Clone 專案
 
 ```bash
-git clone https://github.com/your-username/your-repo.git
-cd your-repo
+git https://github.com/wrbyepct/assignment.git
+cd assignment
 ```
 
 ### Step 2：設定 Terraform AWS 憑證
