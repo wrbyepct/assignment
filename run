@@ -23,7 +23,7 @@ dry-run() {
 }
 
 etl() {
-    docker compose exec django python -m core.manage load_tax_registration --truncate
+    docker compose exec django python -m core.manage load_tax_registration --truncate $@
 
 }
 

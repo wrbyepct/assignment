@@ -107,6 +107,9 @@ class Command(BaseCommand):
 
     def handle_successful_etl_job(self):
         """執行 ETL Job, 更新成功結果, log 成功訊息"""
+        # 可加入這行來強制失敗
+        # raise Exception("測試失敗場景！")
+
         with self._track_progress():
             self._run_etl()
         self.tracker.complete()
