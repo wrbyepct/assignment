@@ -65,7 +65,8 @@ class Command(BaseCommand):
         self.dry_run = options["dry_run"]
         self.resume = options["resume"]
         self.limit = options["limit"]
-        self.auto = options["auto"]  # 存起來
+        self.auto = options["auto"]
+        self.start_batch = 1
 
         # 檢查是否有正在執行中的任務
         HEARTBEAT_TIMEOUT = timedelta(minutes=5)  # 測試用只等待五分鐘
@@ -100,6 +101,14 @@ class Command(BaseCommand):
             data_source_url=self.CSV_URL,
             dry_run=self.dry_run,
         )
+
+        # 取得起始批次(斷點續傳)
+        if self.resume:
+            self.start_batch = self.tracker.get_resume_batch()
+
+            if self.start_batch > 1:
+                self.stdout.write(f"  ⏩ 從批次 {self.start_batch} 繼續...")
+
         self.tracker.start()
 
         try:
@@ -154,19 +163,11 @@ class Command(BaseCommand):
 
         self.stdout.write("🔄 階段 2: 轉換並載入資料...")
 
-        # 取得起始批次(斷點續傳)
-        start_batch = 1
-        if self.resume:
-            start_batch = self.tracker.get_resume_batch()
-
-            if start_batch > 1:
-                self.stdout.write(f"  ⏩ 從批次 {start_batch} 繼續...")
-
         # 處理每個 chunk
         for chunk_num, df_chunk in enumerate(data_chunks, 1):
             # Garbage collection after every loop
 
-            if chunk_num < start_batch:
+            if chunk_num < self.start_batch:
                 continue
 
             # 限制處理筆數(for testing)
