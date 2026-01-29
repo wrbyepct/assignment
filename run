@@ -119,7 +119,53 @@ lint() {
     git add .; poetry run pre-commit run --all-files 
 }
 
+# ========== Scheduler cocmmands ===========
+dry-run-per-min() {
+    TASK_FUNC="core.tax_registration.tasks.run_tax_import_dry_run"
 
+    echo="正在設置 Django Q2 排程..."
+
+    docker compose exec -T django python -m core.manage shell  <<EOF
+from django_q.models import Schedule
+from django_q.tasks import schedule
+
+Schedule.objects.filter(func='$TASK_FUNC').delete()
+
+schedule(
+    func='$TASK_FUNC',
+    name='Every Minute Dry Run',
+    schedule_type=Schedule.MINUTES,
+    minutes=1,
+    repeats=5
+)
+
+print("---- 每分鐘 Dry Run 排程設置完成")
+EOF
+}
+
+etl-per-day() {
+
+    TASK_FUNC="core.tax_registration.tasks.run_tax_import"
+
+    echo="正在設置 Django Q2 排程..."
+
+    docker compose exec -T django python -m core.manage shell <<EOF
+from django_q.models import Schedule
+from django_q.tasks import schedule
+
+Schedule.objects.filter(func='$TASK_FUNC').delete()
+
+schedule(
+    func='$TASK_FUNC',
+    name='Daily ETL Run',
+    schedule_type=Schedule.CRON,
+    cron='0 2 * * *',
+    repeats=-1
+)
+
+print("---- 每日 ETL 排程設置完成")
+EOF
+}
 
 # ==================== Terraform 初始化與部署 ====================
 run_terraform() {
