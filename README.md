@@ -619,7 +619,7 @@ CommandError: 執行失敗: 測試失敗場景！
 
 2. **執行失敗的 ETL**：
 ```bash
-./run --auto
+./run etl --auto
 ```
 
 3. **檢查告警狀態**：
@@ -710,6 +710,11 @@ CommandError: 執行失敗: 測試失敗場景！
 
 4. 點擊 **Save**
 
+5. 或使用 `run` 腳本一建執行
+```bash
+./run etl-per-day
+```
+
 #### Step 3：快速測試排程（Dry Run 版本）
 
 如果想快速測試排程功能，可以建立一個 Dry Run 版本：
@@ -727,7 +732,12 @@ CommandError: 執行失敗: 測試失敗場景！
 
 3. 點擊 **Save**
 
-4. 等待 1 分鐘，檢查任務執行結果：
+4. 或使用 `run` 腳本一建執行
+```bash
+./run dry-run-per-min
+```
+
+5. 等待 1 分鐘，檢查任務執行結果：
    - 前往 **Successful tasks** 查看成功的任務
    - 或前往 **Failed tasks** 查看失敗的任務
 
