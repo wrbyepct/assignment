@@ -382,7 +382,7 @@ HTTP/1.1 302 Found
 docker compose ps
 
 # 確認 Django 服務健康
-curl -s http://localhost:8000/admin/ | head -5
+curl -I http://localhost:8000/admin/ | head -5
 ```
 
 ---
@@ -562,7 +562,7 @@ CommandError: 執行失敗: 測試失敗場景！
 1. 執行 ETL 並在過程中手動中斷（Ctrl+C）：
 
 ```bash
-./run --auto
+./run etl --auto
 
 # 等待執行到第 10 批次左右，按 Ctrl+C 中斷
 ```
