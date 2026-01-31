@@ -28,7 +28,7 @@ etl() {
 }
 
 resume() {
-    docker compose exec django python -m core.manage load_tax_registration --resume
+    docker compose exec django python -m core.manage load_tax_registration --resume $@
 }
 
 # ========== Django cocmmands ===========
@@ -72,6 +72,11 @@ container-shell() {
 django-shell() {
     docker compose exec django python -m core.manage shell
 }
+
+shell-plus() {
+    docker compose exec django python -m core.manage shell_plus
+}
+
 
 # ==================== Terraform 指令 ====================
 tf-init() {

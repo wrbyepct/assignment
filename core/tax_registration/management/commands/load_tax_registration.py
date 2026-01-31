@@ -25,21 +25,21 @@ logger = logging.getLogger("tax_registration.etl")
 
 
 class Command(BaseCommand):
-    help = "匯入全國營業登記資料(優化版)"
+    help = "匯入全國營業登記資料 ETL"
 
-    # 類別常數
     CSV_URL = "https://eip.fia.gov.tw/data/BGMOPEN1.csv"
 
     def __init__(self):
         super().__init__()
         self.tracker = None
+        self.start_batch = 1
 
     def add_arguments(self, parser):
         parser.add_argument(
             "--batch-size",
             type=int,
             default=10000,
-            help="每批次處理筆數(建議 5000-20000)",
+            help="每批次處理筆數(5000-20000)",
         )
         parser.add_argument(
             "--chunk-size", type=int, default=50000, help="CSV 讀取 chunk 大小"
@@ -49,50 +49,23 @@ class Command(BaseCommand):
             "--dry-run", action="store_true", help="只驗證資料不實際匯入"
         )
         parser.add_argument(
-            "--truncate", action="store_true", help="清空現有資料後重新匯入(危險操作!)"
+            "--truncate", action="store_true", help="清空現有資料後重新匯入"
         )
         parser.add_argument(
-            "--limit", type=int, default=None, help="限制處理筆數(測試用)"
+            "--limit", type=int, default=None, help="限制處理筆數(For Testing)"
         )
         parser.add_argument(
-            "--auto", action="store_true", help="跳過確認提示（用於自動化排程）"
+            "--auto", action="store_true", help="跳過確認提示（For scheduling）"
         )
 
     def handle(self, *args, **options):
         """主要進入點"""
-        self.batch_size = options["batch_size"]
-        self.chunk_size = options["chunk_size"]
-        self.dry_run = options["dry_run"]
-        self.resume = options["resume"]
-        self.limit = options["limit"]
-        self.auto = options["auto"]
-        self.start_batch = 1
-
-        # 檢查是否有正在執行中的任務
-        HEARTBEAT_TIMEOUT = timedelta(minutes=5)  # 測試用只等待五分鐘
-
-        ongoing_job = ETLJobRun.objects.filter(
-            status="running", updated_at__gte=timezone.now() - HEARTBEAT_TIMEOUT
-        ).exists()  # Already indexed, the query is fast
+        self.set_args_vals(**options)
 
         # TODO Add auto resume on scheduler
-        if ongoing_job:
-            self.stdout.write(self.style.ERROR("已有任務正在執行中，請5分鐘後再試。"))
-            return  # 終止執行
+        self.handle_ongoing_job()
 
-        if options["truncate"] and options["resume"]:
-            raise CommandError(
-                "❌ --truncate 和 --resume 不能同時使用\n"
-                "   --truncate: 清空資料後重新匯入\n"
-                "   --resume: 從上次中斷處繼續"
-            )
-
-        # 載入新資料前空 table
-        if options["truncate"]:
-            if not self._confirm_truncate():
-                self.stdout.write(self.style.WARNING("操作已取消"))
-                return
-            self._truncate_tables()
+        self.handle_truncate_resume_conflict()
 
         # 建立執行紀錄
         self.tracker = ETLTracker(
@@ -103,12 +76,11 @@ class Command(BaseCommand):
         )
 
         # 取得起始批次(斷點續傳)
-        if self.resume:
-            self.start_batch = self.tracker.get_resume_batch()
+        self.handle_resume()
 
-            if self.start_batch > 1:
-                self.stdout.write(f"  ⏩ 從批次 {self.start_batch} 繼續...")
+        self.handle_truncate()
 
+        # 開始新的 ETL 任務並記錄
         self.tracker.start()
 
         try:
@@ -117,6 +89,56 @@ class Command(BaseCommand):
             self.handle_failed_etl_job(e)
         finally:
             self._print_summary()
+
+    def set_args_vals(self, **options):
+        """設定 ETL Job 參數資料"""
+        self.batch_size = options["batch_size"]
+        self.chunk_size = options["chunk_size"]
+        self.dry_run = options["dry_run"]
+        self.truncate = options["truncate"]
+        self.resume = options["resume"]
+        self.limit = options["limit"]
+        self.auto = options["auto"]
+
+    def handle_ongoing_job(self):
+        """檢查是否有正在執行中的任務"""
+        HEARTBEAT_TIMEOUT = timedelta(minutes=5)  # 測試用只等待五分鐘
+
+        ongoing_job = ETLJobRun.objects.filter(
+            status="running", updated_at__gte=timezone.now() - HEARTBEAT_TIMEOUT
+        ).exists()  # Already indexed, the query is fast
+
+        if ongoing_job:
+            raise CommandError("已有任務正在執行中，請5分鐘後再試。")
+
+    def handle_truncate_resume_conflict(self):
+        """Raise CommandError 如果 truncate 及 resume 同時存在"""
+        if self.truncate and self.resume:
+            raise CommandError(
+                "❌ --truncate 和 --resume 不能同時使用\n"
+                "   --truncate: 清空資料後重新匯入\n"
+                "   --resume: 從上次中斷處繼續"
+            )
+
+    def handle_resume(self):
+        """如果參數中 resume 為 True, 取回上次任務最後成功批次, 並設定下次任務開始批次"""
+        if self.resume:
+            self.start_batch = self.tracker.get_resume_batch()
+
+            if self.start_batch > 1:
+                self.stdout.write(f"  ⏩ 從批次 {self.start_batch} 繼續...")
+            else:
+                # 如果開始批次為 1, 一律 drop table 以防 duplicate rows insert
+                self.truncate = True
+
+    def handle_truncate(self):
+        """如果參數 truncate 為 True 即做作資料庫全量覆蓋"""
+        # 載入新資料前空 table
+        if self.truncate:
+            if not self._confirm_truncate():
+                self.stdout.write(self.style.WARNING("操作已取消"))
+                return
+            self._truncate_tables()
 
     def handle_successful_etl_job(self):
         """執行 ETL Job, 更新成功結果, log 成功訊息"""
@@ -262,10 +284,6 @@ class Command(BaseCommand):
                 },
             )
 
-    """
-    ===== Load ====
-    """
-
     def _print_summary(self):
         """輸出執行摘要"""
         duration = self.tracker.job_run.duration_seconds or 0
@@ -295,7 +313,7 @@ class Command(BaseCommand):
                 self.style.WARNING(f"  🔄 重複:    {stats['duplicates']:,}")
             )
 
-        self.stdout.write(f"\n{'=' * 60}\n")
+        self.stdout.write(f"\n{'=' * 60}\n")  # Line separater
 
         # 提示查看詳細錯誤
         if stats["failed"] > 0:

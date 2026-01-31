@@ -18,7 +18,7 @@ COPY pyproject.toml poetry.lock ./
 
 # 安裝 Python 依賴到 /build/venv
 RUN poetry config virtualenvs.in-project true && \
-    poetry install --only main --no-root --no-interaction
+    poetry install --with dev --no-root --no-interaction
 
 # ==================== Stage 2: Runtime ====================
 FROM python:3.12.6-slim-bookworm AS runtime

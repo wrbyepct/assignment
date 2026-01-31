@@ -9,7 +9,6 @@ import logging
 
 # ==================== 初始化 environ ====================
 env = environ.Env(
-    # 設定預設值與類型
     DEBUG=(bool, False),
     ALLOWED_HOSTS=(list, []),
     DB_PORT=(int, 5432),
@@ -41,7 +40,12 @@ THIRD_PARTY_APPS = [
 
 PROJECT_APPS = ["core.tax_registration"]
 
+DEV_APPS = ["django_extensions"]
+
 INSTALLED_APPS = BASE_APPS + THIRD_PARTY_APPS + PROJECT_APPS
+
+if DEBUG:
+    INSTALLED_APPS += DEV_APPS
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
@@ -219,6 +223,7 @@ LOGGING = {
             "log_group": env("CLOUDWATCH_LOG_GROUP", default="/docker/etl"),
             "stream_name": "console",
             "formatter": "json",
+            # "use_queues": False,  # Set to True in production
         },
         "console": {
             "class": "logging.StreamHandler",

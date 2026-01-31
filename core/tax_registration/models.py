@@ -135,7 +135,7 @@ class ETLJobRun(models.Model):
         ("running", "執行中"),
         ("success", "成功"),
         ("failed", "失敗"),
-        ("partial", "部分成功"),
+        ("partial", "部分成功"),  # TODO
     ]
 
     started_at = models.DateTimeField("開始時間", auto_now_add=True, db_index=True)
