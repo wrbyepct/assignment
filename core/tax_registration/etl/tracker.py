@@ -138,13 +138,9 @@ class ETLTracker:
     def get_resume_batch(self) -> int:
         """取得斷點續傳的起始批次"""
         try:
-            last_job = (
-                ETLJobRun.objects.filter(status="running")
-                .order_by("-started_at")
-                .first()
-            )
+            last_job = ETLJobRun.objects.latest("started_at")
 
-            if last_job:
+            if last_job.status == "running":
                 progress = ImportProgress.objects.filter(job_run=last_job).first()
                 if progress:
                     return progress.last_successful_batch + 1
