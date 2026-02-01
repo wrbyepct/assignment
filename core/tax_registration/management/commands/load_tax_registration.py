@@ -202,6 +202,8 @@ class Command(BaseCommand):
 
             try:
                 self._process_chunk(df_chunk, chunk_num)
+            except CommandError:
+                raise  # CommandError 代表需中斷任務程度的錯誤, 繼續往上傳
             except Exception as e:
                 logger.error(f"批次 {chunk_num} 處理失敗: {e}")
                 self.tracker.save_error_batch(df_chunk, chunk_num, str(e))

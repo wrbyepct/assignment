@@ -2,6 +2,7 @@
 
 import pandas as pd
 from typing import Tuple, List
+from django.core.management.base import CommandError
 
 
 class TaxDataTransformer:
@@ -23,7 +24,8 @@ class TaxDataTransformer:
         required_cols = ["統一編號", "營業人名稱"]
         missing_cols = [col for col in required_cols if col not in df.columns]
         if missing_cols:
-            raise ValueError(f"缺少必要欄位: {missing_cols}")
+            # 如缺少必要欄位先直接中斷程式讓人工 debug
+            raise CommandError(f"缺少必要欄位: {missing_cols}")
 
         # 3. 清理統一編號
         df["統一編號"] = df["統一編號"].fillna("").str.strip()
