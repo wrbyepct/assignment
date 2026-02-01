@@ -52,13 +52,13 @@ class TaxDataTransformer:
         duplicates_count = duplicates_mask.sum()
 
         if duplicates_count > 0:
-            for idx in df[duplicates_mask].index:
+            for _, row in df[duplicates_mask].iterrows():
                 errors.append(
                     {
                         "type": "DUPLICATE",
                         "batch": chunk_num,
-                        "ban": df.loc[idx, "統一編號"],
-                        "message": f"重複的統一編號: {df.loc[idx, '統一編號']}",
+                        "ban": row["統一編號"],
+                        "message": f"重複的統一編號: {row['統一編號']}",
                     }
                 )
 
