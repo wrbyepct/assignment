@@ -1428,9 +1428,14 @@ CommandError: 執行失敗: 測試失敗場景！
 5. **驗證 Log 是否正確收集**：
    - 在「最近的 Log 事件」Widget 中應該看到 JSON 格式的 Log
    - 包含 `timestamp`、`level`、`message` 等欄位
+   - 
+<img width="1887" height="745" alt="dashboard1" src="https://github.com/user-attachments/assets/a39bcaa2-7435-4adf-8618-93156cf8d235" />
+
+<img width="1885" height="778" alt="dashboard2" src="https://github.com/user-attachments/assets/b5fd44c2-fff5-4439-b633-cc2c88015526" />
+
+<img width="1596" height="164" alt="SNS" src="https://github.com/user-attachments/assets/43c71b86-c327-40bf-b97d-d664e900d4c0" />
 
 
-1. 等等這裡加個 Demo 圖
 ---
 
 ## 五、題目四：Docker Log 蒐集 - Log Implement
