@@ -234,10 +234,10 @@ LOGGING = {
             "class": "logging.handlers.RotatingFileHandler",
             "formatter": "json",
             "filename": "/var/log/django/etl.log",
-            # 輪替門檻：當檔案達到 10MB (10 * 1024 * 1024 bytes) 時，就切換新檔
+            # 輪替門檻：當檔案達到 10MB (10 * 1024 * 1024 bytes) 時，就存入 backup
             "maxBytes": 10 * 1024 * 1024,  # 10 MB
             # 備份數量：最多保留 5 個舊檔（etl.log.1, etl.log.2...）
-            #  當產生第 6 個時，最舊的會被刪除。這叫「循環覆蓋」。
+            #  當產生第 6 個時，最舊的會被刪除。
             "backupCount": 5,
             "encoding": "utf-8",
         },

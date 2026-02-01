@@ -43,3 +43,5 @@ logs/
 *.tfstate.*
 *.tfvars
 *.tfvars.json
+
+README_BACKUP.md
