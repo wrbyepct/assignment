@@ -1570,12 +1570,6 @@ Agent 透過 `config.json` 設定收集規則：
 
 ### 5.7 執行指令與測試
 
-| 測試項目 | 指令 | 預期結果 |
-|----------|------|----------|
-| 產生測試日誌 | `./run django-shell` | 日誌同時出現在 console 和檔案 |
-| 查看本地日誌檔案 | `./run logs django` | 顯示 JSON 格式的日誌 |
-| 查看 CloudWatch Agent 狀態 | `./run logs cloudwatch-agent` | 顯示 Agent 正常運行 |
-
 #### 驗證日誌收集
 
 ```bash
