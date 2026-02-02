@@ -1,0 +1,12 @@
+from dataclasses import dataclass
+from typing import Optional
+
+
+@dataclass
+class UpdateCheckResult:
+    """更新檢查結果，判斷是否執行全量更新，由於 log 紀錄理由"""
+
+    has_update: bool
+    reason: str
+    etag: Optional[str] = None  # 第一階段取得
+    content_hash: Optional[str] = None  # 第二階段計算
