@@ -397,12 +397,6 @@ flowchart TB
     MF --> DB
 ```
 
-**架構設計的幾個重點**：
-
-1. **本地即可完整運行**：透過 Docker Compose，使用者僅需創建一個 Terraform 部屬用的 IAM User 就能測試 ETL 邏輯
-2. **Infrastructure as Code**：所有 AWS 資源都由 Terraform 管理，可一鍵部署、一鍵銷毀
-3. **雙路徑日誌收集**：同時支援 Console（Watchtower）與 File（CloudWatch Agent）兩種收集方式
-
 ---
 
 ### 1.4 快速驗證資料結構
