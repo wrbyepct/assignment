@@ -1542,13 +1542,6 @@ flowchart TB
 | `file` | RotatingFileHandler | `/var/log/django/etl.log` | JSON |
 | `watchtower` | CloudWatchLogHandler | CloudWatch `console` stream | JSON |
 
-#### Logger 配置
-
-| Logger | Handlers | Level | 說明 |
-|--------|----------|-------|------|
-| `tax_registration` | console, file, watchtower | INFO | ETL 相關日誌，三路輸出 |
-| root | console | WARNING | 第三方套件日誌，僅 console |
-
 #### 檔案輪替設定
 
 | 設定 | 值 | 說明 |
