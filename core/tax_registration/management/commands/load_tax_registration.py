@@ -19,7 +19,7 @@ from core.tax_registration.etl.extractor import CSVExtractor
 from core.tax_registration.etl.transformer import TaxDataTransformer
 from core.tax_registration.etl.loader import BulkLoader
 from core.tax_registration.etl.tracker import ETLTracker
-
+from django.conf import settings
 
 logger = logging.getLogger("tax_registration.etl")
 
@@ -27,7 +27,7 @@ logger = logging.getLogger("tax_registration.etl")
 class Command(BaseCommand):
     help = "匯入全國營業登記資料 ETL"
 
-    CSV_URL = "https://eip.fia.gov.tw/data/BGMOPEN1.csv"
+    CSV_URL = settings.CSV_URL
 
     def __init__(self):
         super().__init__()

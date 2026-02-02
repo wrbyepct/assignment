@@ -265,3 +265,33 @@ class ImportProgress(models.Model):
         if self.total_batches > 0:
             return (self.current_batch / self.total_batches) * 100
         return 0
+
+
+class DataSourceMetadata(models.Model):
+    """記錄資料來源的 metadata，用於判斷是否執行全量更新"""
+
+    source_url = models.URLField(unique=True, verbose_name="資料來源 URL")
+
+    # 用於快速檢查, 資料來源使用 Weak Etag 只包含 content size 和 timestamp
+    etag = models.CharField(max_length=200, blank=True, null=True, verbose_name="ETag")
+
+    # 用於判斷內容是否更新, 自己手動計算檔案 hash
+    content_hash = models.CharField(
+        max_length=64,  # SHA256 = 64 字元，MD5 = 32 字元
+        blank=True,
+        null=True,
+        verbose_name="內容 Hash",
+    )
+
+    # 監控用
+    last_checked_at = models.DateTimeField(auto_now=True, verbose_name="上次檢查時間")
+    last_updated_at = models.DateTimeField(
+        blank=True, null=True, verbose_name="上次實際更新時間"
+    )
+
+    class Meta:
+        db_table = "data_source_metadata"
+        verbose_name = "資料來源 metadata"
+
+    def __str__(self):
+        return f"{self.source_url}"
