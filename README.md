@@ -974,15 +974,6 @@ flowchart TB
     style CWA fill:#9c27b0,color:#fff
 ```
 
-#### 服務說明
-
-| 服務 | Image | 職責 |
-|------|-------|------|
-| `django` | 自建 | Django Web Server + ETL 入口點 |
-| `postgres` | postgres:15 | 資料儲存 + Django-Q2 任務佇列 |
-| `q-worker` | 自建（同 django） | Django-Q2 Worker，執行排程任務 |
-| `cloudwatch-agent` | amazon/cloudwatch-agent | 收集 Log 檔案並推送至 CloudWatch |
-
 #### 設計原則
 
 | 原則 | 實踐 |
